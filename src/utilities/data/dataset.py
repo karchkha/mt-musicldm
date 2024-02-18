@@ -3,7 +3,7 @@
 import sys
 
 sys.path.append(
-    "/home/kechen/research/CTTM/Controllable_TTM"
+    "/home/karchkhadze/MusicLDM-Ext/src"
 )
 import csv
 import json

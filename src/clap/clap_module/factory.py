@@ -147,8 +147,8 @@ def create_model(
                 ckpt = load_state_dict(checkpoint_path, skip_params=True)
                 model.load_state_dict(ckpt)
                 param_names = [n for n, p in model.named_parameters()]
-                for n in param_names:
-                    print(n, "\t", "Loaded" if n in ckpt else "Unloaded")
+                # for n in param_names:
+                #     print(n, "\t", "Loaded" if n in ckpt else "Unloaded")
             else:
                 logging.warning(
                     f"Pretrained weights ({pretrained}) not found for model {amodel_name}."

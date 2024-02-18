@@ -542,18 +542,18 @@ class DDPM(pl.LightningModule):
                 > 1e-7
             ), "Optimizer is not working"
 
-        if len(self.metrics_buffer.keys()) > 0:
-            for k in self.metrics_buffer.keys():
-                self.log(
-                    k,
-                    self.metrics_buffer[k],
-                    prog_bar=False,
-                    logger=True,
-                    on_step=True,
-                    on_epoch=False,
-                )
-                print(k, self.metrics_buffer[k])
-            self.metrics_buffer = {}
+        # if len(self.metrics_buffer.keys()) > 0:
+        #     for k in self.metrics_buffer.keys():
+        #         self.log(
+        #             k,
+        #             self.metrics_buffer[k],
+        #             prog_bar=False,
+        #             logger=True,
+        #             on_step=True,
+        #             on_epoch=False,
+        #         )
+        #         print(k, self.metrics_buffer[k])
+        #     self.metrics_buffer = {}
 
         loss, loss_dict = self.shared_step(batch)
 
@@ -666,6 +666,20 @@ class DDPM(pl.LightningModule):
                         "The target folder for evaluation does not exist: %s"
                         % waveform_save_path
                     )
+
+
+                if len(self.metrics_buffer.keys()) > 0:
+                    for k in self.metrics_buffer.keys():
+                        self.log(
+                            k,
+                            self.metrics_buffer[k],
+                            prog_bar=False,
+                            logger=True,
+                            on_step=False,
+                            on_epoch=True,
+                        )
+                        print(k, self.metrics_buffer[k])
+                    self.metrics_buffer = {}
 
         self.cond_stage_key = self.cond_stage_key_orig
         if self.cond_stage_model is not None:
@@ -2095,7 +2109,7 @@ class MusicLDM(DDPM):
         use_ddim = ddim_steps is not None
         waveform_save_path = os.path.join(self.get_log_dir(), name)
         os.makedirs(waveform_save_path, exist_ok=True)
-        print("Waveform save path: ", waveform_save_path)
+        print("\nWaveform save path: ", waveform_save_path)
 
         if (
             "audiocaps" in waveform_save_path
@@ -2158,8 +2172,8 @@ class MusicLDM(DDPM):
                         candidates = similarity[i :: z.shape[0]]
                         max_index = torch.argmax(candidates).item()
                         best_index.append(i + max_index * z.shape[0])
-                        print("Similarity between generated audio and text", similarity)
-                        print("Choose the following indexes:", best_index)
+                        # print("Similarity between generated audio and text", similarity)
+                        # print("Choose the following indexes:", best_index)
                 else:
                     best_index = torch.arange(z.shape[0])
 

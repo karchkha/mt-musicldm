@@ -32,10 +32,10 @@ def get_param_num(model):
     return num_param
 
 
-def get_vocoder(config, device, mel_bins):
+def get_vocoder(config, device, mel_bins, ckpt_path=None):
     name = "HiFi-GAN"
     speaker = ""
-    ROOT = "/home/kechen/research/CTTM/hifi-gan/"
+    ROOT = "src/hifigan"
 
     if name == "MelGAN":
         if speaker == "LJSpeech":
@@ -54,16 +54,18 @@ def get_vocoder(config, device, mel_bins):
                 config = json.load(f)
             config = hifigan.AttrDict(config)
             vocoder = hifigan.Generator(config)
-            print("Load cp_hifigan_finetune/g_00640000")
-            ckpt = torch.load(os.path.join(ROOT, "cp_hifigan_finetune/g_00640000"),map_location='cpu')
-            print("*************************HifiGAN ckpt*******************************")
-            for n,p in vocoder.named_parameters():
-                if n in ckpt['generator']:
-                    print(n, "Loaded")
-                else:
-                    print(n, "Unloaded")
-            print("********************************************************************")
-            vocoder.load_state_dict(ckpt["generator"])
+            if ckpt_path is not None:
+                print("Load:", ckpt_path)
+                # ckpt = torch.load(os.path.join(ROOT, "cp_hifigan_finetune/g_00640000"),map_location='cpu')
+                ckpt = torch.load(ckpt_path, map_location='cpu')
+                # print("*************************HifiGAN ckpt*******************************")
+                # for n,p in vocoder.named_parameters():
+                #     if n in ckpt['generator']:
+                #         print(n, "Loaded")
+                #     else:
+                #         print(n, "Unloaded")
+                # print("********************************************************************")
+                vocoder.load_state_dict(ckpt["generator"])
             vocoder.eval()
             vocoder.remove_weight_norm()
             vocoder.to(device)

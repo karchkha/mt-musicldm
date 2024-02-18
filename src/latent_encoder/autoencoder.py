@@ -440,11 +440,12 @@ class AutoencoderKL(pl.LightningModule):
 
         if self.image_key == "fbank":
             # self.vocoder = None
+            chkpt = ddconfig.get("hifigan_ckpt", None)
             if config is not None:
-                self.vocoder = get_vocoder(None, "cpu", config["preprocessing"]["mel"]["n_mel_channels"])  # TODO fixed parameter here
+                self.vocoder = get_vocoder(None, "cpu", config["preprocessing"]["mel"]["n_mel_channels"], ckpt_path = chkpt)  # TODO fixed parameter here
             else:
                 print("Mel Num:", mel_num)
-                self.vocoder = get_vocoder(None, "cpu", mel_num)  # TODO fixed parameter here
+                self.vocoder = get_vocoder(None, "cpu", mel_num, ckpt_path = chkpt)  # TODO fixed parameter here
         elif self.image_key == "stft":
             self.wave_decoder = Generator(input_channel=512)
             self.wave_decoder.train()
