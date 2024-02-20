@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 
-from .model import CLAP, convert_weights_to_fp16
+from .model import CLAP, convert_weights_to_fp16, Response_CLAP
 from .openai import load_openai_model
 from .pretrained import get_pretrained_url, download_pretrained
 from .transform import image_transform
@@ -130,10 +130,14 @@ def create_model(
         #         model_cfg['vision_cfg']['timm_model_pretrained'] = True
         #     else:
         #         assert False, 'pretrained image towers currently only supported for timm models'
-        model_cfg["text_cfg"]["model_type"] = tmodel_name
+        # model_cfg["text_cfg"]["model_type"] = tmodel_name
         model_cfg["enable_fusion"] = enable_fusion
         model_cfg["fusion_type"] = fusion_type
-        model = CLAP(**model_cfg)
+
+        if "response" in amodel_name:
+            model = Response_CLAP(**model_cfg)
+        else:
+            model = CLAP(**model_cfg)
 
         if pretrained:
             checkpoint_path = ""
@@ -200,15 +204,28 @@ def create_model(
                 elif os.path.basename(pretrained_audio).startswith('finetuned'):  # checkpoint trained via linear probe codebase
                     audio_ckpt = torch.load(pretrained_audio, map_location='cpu')
                 else:
-                    raise ValueError('Unknown audio checkpoint')
+                    audio_ckpt = torch.load(pretrained_audio, map_location="cpu")
+                    audio_ckpt = audio_ckpt["state_dict"]
+
+                    keys = list(audio_ckpt.keys())
+                    for key in keys:
+                        # Skip keys that contain "text_branch" or "first_stage_model"
+                        if "text_branch" in key or "text" in key:
+                            print("Removing:", key)
+                            audio_ckpt.pop(key)
+                            continue
+                        if key.startswith("module"):
+                            v = audio_ckpt.pop(key)
+                            audio_ckpt[key[7:]] = v
+                    # raise ValueError('Unknown audio checkpoint')
             else:
                 raise f'this audio encoder pretrained checkpoint is not support'
 
             model.load_state_dict(audio_ckpt, strict=False)
             logging.info(f"Loading pretrained {amodel_name} weights ({pretrained_audio}).")
             param_names = [n for n, p in model.named_parameters()]
-            for n in param_names:
-                print(n, "\t", "Loaded" if n in audio_ckpt else "Unloaded")
+            # for n in param_names:
+            #     print(n, "\t", "Loaded" if n in audio_ckpt else "Unloaded")
             
         model.to(device=device)
         if precision == "fp16":

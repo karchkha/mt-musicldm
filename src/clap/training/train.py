@@ -115,6 +115,8 @@ def train_one_epoch(
                     audio_features_mlp=audio_features_mlp,
                     text_features_mlp=text_features_mlp
                 )
+            if args.mse_loss:
+                total_loss = F.mse_loss(audio_features, text_features)
             else:
                 total_loss = loss(
                     audio_features=audio_features,

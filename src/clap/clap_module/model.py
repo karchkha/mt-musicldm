@@ -8,6 +8,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from email.mime import audio
 from typing import Tuple, Union, Callable, Optional
+import copy
 
 import numpy as np
 import torch
@@ -797,6 +798,238 @@ class CLAP(nn.Module):
 
         return output_dict
 
+class Response_CLAP(nn.Module):
+    def __init__(
+        self,
+        embed_dim: int,
+        audio_cfg: CLAPAudioCfp,
+        text_cfg: CLAPTextCfg,
+        quick_gelu: bool = False,
+        enable_fusion: bool = False,
+        fusion_type: str = "None",
+        joint_embed_shape: int = 512,
+        mlp_act: str = "relu",
+        use_make_noisy = False,
+    ):
+        super().__init__()
+        if isinstance(audio_cfg, dict):
+            audio_cfg = CLAPAudioCfp(**audio_cfg)
+        if isinstance(text_cfg, dict):
+            text_cfg = CLAPAudioCfp(**text_cfg)
+            # text_cfg = CLAPTextCfg(**text_cfg)
+
+        self.audio_cfg = audio_cfg
+        # self.text_cfg = text_cfg
+        self.text_cfg = text_cfg
+        self.enable_fusion = enable_fusion
+        self.fusion_type = fusion_type
+        self.joint_embed_shape = joint_embed_shape
+        self.use_make_noisy = use_make_noisy
+
+
+        self.context_length = 77 # this is from HTSAT_base might need to change later
+
+
+        # OpenAI models are pretrained w/ QuickGELU but native nn.GELU is both faster and more
+        # memory efficient in recent PyTorch releases (>= 1.10).
+        # NOTE: timm models always use native GELU regardless of quick_gelu flag.
+        act_layer = QuickGELU if quick_gelu else nn.GELU
+
+        if mlp_act == "relu":
+            mlp_act_layer = nn.ReLU()
+        elif mlp_act == "gelu":
+            mlp_act_layer = nn.GELU()
+        else:
+            raise NotImplementedError
+
+        # audio branch
+        # audio branch parameters
+        if audio_cfg.model_type == "PANN":
+            self.audio_branch = create_pann_model(audio_cfg, enable_fusion, fusion_type)
+        elif audio_cfg.model_type == "HTSAT":
+            self.audio_branch = create_htsat_model(
+                audio_cfg, enable_fusion, fusion_type
+            )
+        else:
+            logging.error(f"Model config for {audio_cfg.model_type} not found")
+            raise RuntimeError(f"Model config for {audio_cfg.model_type} not found.")
+        
+        ############## response network #################
+        if text_cfg.model_type == "PANN":
+            self.text_branch = create_pann_model(text_cfg, enable_fusion, fusion_type)
+        elif text_cfg.model_type == "HTSAT":
+            self.text_branch = create_htsat_model(
+                text_cfg, enable_fusion, fusion_type
+            )
+        else:
+            logging.error(f"Model config for {text_cfg.model_type} not found")
+            raise RuntimeError(f"Model config for {text_cfg.model_type} not found.")
+        
+        self.text_transform = MLPLayers(
+            units=[
+                self.joint_embed_shape,
+                self.joint_embed_shape,
+                self.joint_embed_shape,
+            ],
+            dropout=0.1,
+        )
+        self.text_projection = nn.Sequential(
+            nn.Linear(embed_dim, self.joint_embed_shape),
+            mlp_act_layer,
+            nn.Linear(self.joint_embed_shape, self.joint_embed_shape),
+        )
+
+        # ============================================================================================================ 
+
+        # audio branch parameters
+        self.audio_transform = MLPLayers(
+            units=[
+                self.joint_embed_shape,
+                self.joint_embed_shape,
+                self.joint_embed_shape,
+            ],
+            dropout=0.1,
+        )
+
+        self.audio_projection = nn.Sequential(
+            nn.Linear(embed_dim, self.joint_embed_shape),
+            mlp_act_layer,
+            nn.Linear(self.joint_embed_shape, self.joint_embed_shape),
+        )
+
+        self.logit_scale_a = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+        self.logit_scale_t = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+        self.register_buffer("attn_mask", self.build_attention_mask(), persistent=False)
+
+    def build_attention_mask(self):
+        # lazily create causal attention mask, with full attention between the vision tokens
+        # pytorch uses additive attention mask; fill with -inf
+        mask = torch.empty(self.context_length, self.context_length)
+        mask.fill_(float("-inf"))
+        mask.triu_(1)  # zero out the lower diagonal
+        return mask
+
+    def encode_audio(self, audio, device):
+        return self.audio_branch(
+            audio, mixup_lambda=None, device=device
+        )  # mix lambda needs to add
+
+    def encode_text(self, text, device):
+
+        x = self.text_branch(text, mixup_lambda=None, device=device)
+        x = self.text_projection(x["embedding"])
+        return x
+
+    def get_response_input(self, audio, text):
+        # Create a deep copy of the audio dictionary
+        audio_copy = copy.deepcopy(audio)
+        
+        # Modify the copy
+        audio_copy["waveform"] = audio_copy["response"] ### put responce in main "waveform" place to process batch farther correctly
+        
+        # Return the modified copy
+        return audio_copy
+
+    def forward(self, audio, text, device=None):
+        """Forward audio and text into the CLAP
+
+        Parameters
+        ----------
+        audio: torch.Tensor (batch_size, audio_length)
+            the time-domain audio input / the batch of mel_spec and longer list.
+        text: torch.Tensor (batch_size, audio_length) it really uses audio responce as an input
+        """
+
+        # make it compatible with CLAP training pipeline
+        text = self.get_response_input(audio, text)
+
+        if device is None:
+            if audio is not None:
+                device = audio.device
+            elif text is not None:
+                device = text.device
+        if audio is None and text is None:
+            # a hack to get the logit scale
+            return self.logit_scale_a.exp(), self.logit_scale_t.exp()
+        elif audio is None:
+            return self.encode_text(text, device=device)
+        elif text is None:
+            return self.audio_projection(
+                self.encode_audio(audio, device=device)["embedding"]
+            )
+        audio_features = self.audio_projection(
+            self.encode_audio(audio, device=device)["embedding"]
+        )
+        audio_features = F.normalize(audio_features, dim=-1)
+
+        text_features = self.encode_text(text, device=device)
+        text_features = F.normalize(text_features, dim=-1)
+
+        audio_features_mlp = self.audio_transform(audio_features)
+        text_features_mlp = self.text_transform(text_features)
+        # Four outputs: audio features (basic & MLP), text features (basic & MLP)
+        return (
+            audio_features,
+            text_features,
+            audio_features_mlp,
+            text_features_mlp,
+            self.logit_scale_a.exp(),
+            self.logit_scale_t.exp(),
+        )
+
+    def get_logit_scale(self):
+        return self.logit_scale_a.exp(), self.logit_scale_t.exp()
+
+    def get_text_embedding(self, data):
+        """Get the text embedding from the model
+
+        Parameters
+        ----------
+        data: torch.Tensor
+            a tensor of text embedding
+
+        Returns
+        ----------
+        text_embed: torch.Tensor
+            a tensor of text_embeds (N, D)
+
+        """
+        device = next(self.parameters()).device
+        # for k in data:
+        #     data[k] = data[k].to(device)
+        text_embeds = self.encode_text(data, device=device)
+        text_embeds = F.normalize(text_embeds, dim=-1)
+
+        return text_embeds
+
+    def get_audio_embedding(self, data):
+        """Get the audio embedding from the model
+
+        Parameters
+        ----------
+        data: a list of dict
+            the audio input dict list from 'get_audio_feature' method
+
+        Returns
+        ----------
+        audio_embed: torch.Tensor
+            a tensor of audio_embeds (N, D)
+
+        """
+        device = next(self.parameters()).device
+        input_dict = {}
+        keys = data[0].keys()
+        for k in keys:
+            input_dict[k] = torch.cat([d[k].unsqueeze(0) for d in data], dim=0).to(
+                device
+            )
+
+        audio_embeds = self.audio_projection(
+            self.encode_audio(input_dict, device=device)["embedding"]
+        )
+        audio_embeds = F.normalize(audio_embeds, dim=-1)
+
+        return audio_embeds
 
 def convert_weights_to_fp16(model: nn.Module):
     """Convert applicable model parameters to fp16"""

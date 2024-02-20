@@ -23,6 +23,9 @@ try:
 except ImportError:
     hvd = None
 
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from clap_module import create_model_and_transforms, trace_model, create_model
 from training.data import get_data
 from training.distributed import is_master, init_distributed_device, world_info_from_env
@@ -255,7 +258,7 @@ def main():
 
     if is_master(args):
         logging.info("Model:")
-        logging.info(f"{str(model)}")
+        # logging.info(f"{str(model)}")
         logging.info("Params:")
         params_file = os.path.join(args.logs, args.name, "params.txt")
         with open(params_file, "w") as f:
@@ -301,6 +304,15 @@ def main():
     if args.freeze_text:
         print("Freeze Text!!!!")
         for k in text_freeze_parameters:
+            k.requires_grad = False
+
+    # freeze audio encoder
+    audio_freeze_parameters = [p for n, p in named_parameters if "audio_branch" in n or "audio_transform" in n or "audio_projection" in n]
+
+    if args.freeze_audio:
+        print("Freeze Audio!!!!")
+        model.audio_branch.eval()
+        for k in audio_freeze_parameters:
             k.requires_grad = False
 
     gain_or_bias_params = [
@@ -482,12 +494,14 @@ def main():
             args.val_sz = data["val"].dataloader.num_samples
         # you will have to configure this for your project!
         wandb.init(
-            entity="clap",
+            # entity="clap",
             project="clap",
             notes=args.wandb_notes,
-            name=args.wandb_notes,
+            name=args.name,  #args.wandb_notes,
             tags=[],
             config=vars(args),
+            save_code= False,
+            dir = log_base_path,
         )
         if args.debug:
             wandb.watch(model, log="all")

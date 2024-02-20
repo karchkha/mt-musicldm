@@ -249,6 +249,382 @@ class ToyDataset(Dataset):
     def __len__(self):
         return self.total_size
 
+
+class Audiostock_10k_16khz_dataset(Dataset):
+    def __init__(self, input_filename, transforms, args = None):
+        logging.debug(f"Loading csv data from {input_filename}.")
+
+        self.args = args
+
+        df = []
+        for datapath in input_filename:
+            data =  self.read_datafile(datapath) 
+            for dictionary in data:
+                dictionary['__url__'] = datapath[:-5] + "/0"  # Removes the ".json" extension
+            df += data
+
+
+        # df = pd.read_csv(input_filename, sep=args.csv_separator)
+
+        self.images = [item['wav'] for item in df]
+        self.captions = [item['caption'] for item in df]
+        self.transforms = transforms
+        self.labels = [item['labels'] for item in df]
+        self.frame_offset = [item['frame_offset'] for item in df]
+        self.url = [item['__url__'] for item in df]
+        logging.debug("Done loading data.")
+
+
+        if args.class_index_dict is None:  ### putting empty dict if notheing was given
+            args.class_index_dict  = {} #pd.DataFrame(columns=["index", "display_name"])
+
+        self.class_index_dict=copy.deepcopy(args.class_index_dict)
+
+
+    def read_datafile(self, file_path): # split):
+        """
+        Reads a JSON file and performs operations on its data.
+        
+        Args:
+            file_path (str): The path to the JSON file.
+            split (str): The split name to wrap the final dictionary.
+            
+        Returns:
+            List[Dict[str, Any]]: The modified data as a list of dictionaries.
+        """
+
+
+        # Initialize an empty list to store dictionaries
+        data = []
+
+        # Open the file and read lines
+        with open(file_path, 'r') as file:
+            lines = file.readlines()
+
+        # Iterate through each line
+        for line in lines:
+            # Create a dictionary with the desired key and value
+            dictionary_entry = {'audio_file_name_on_website': line.strip()}  # Assuming you want to strip newline characters
+
+            # Append the dictionary to the list
+            data.append(dictionary_entry)
+
+
+        dataset_directory = os.path.dirname(os.path.dirname(file_path))
+        filename = os.path.basename(file_path)
+        dataset_name = filename.split('-')[1]
+
+        wav_directory = os.path.abspath(os.path.join(dataset_directory, dataset_name))
+        label_path = os.path.abspath(os.path.join(dataset_directory,"label"))
+
+        new_data = []
+        entries_to_remove = []  # List to store entries to be removed
+
+
+
+
+        for i, entry in enumerate(data):
+
+            #this is teporary will be removed when we correct dataset
+            if dataset_name == "train":
+                i = i+1
+            else:
+                i = i + 9005
+                # if i == 10005:
+                #     i=10004
+
+            lp = os.path.join(label_path, str(i) + '.json')
+            assert os.path.exists(lp), f'the label file {lp} does not exists.'
+            with open(lp, 'r') as lff:
+                label_data = json.load(lff)
+
+            # get flac data pathe
+            flac_file_path = os.path.join(wav_directory, str(i) + '.wav')
+            entry['wav'] = flac_file_path
+
+            entry['frame_offset'] = 0
+
+            entry["caption"] = label_data.get("text", 'not available')[0]
+            # get data category if given
+
+            labels = label_data.get('tag',  'not available')
+            if labels == 'not available':
+                entry['labels'] = []
+            elif isinstance(labels, list):
+                entry['labels'] = labels
+            else:
+                try:
+                    label_list = eval(labels)
+                    if isinstance(label_list, list):
+                        entry['labels'] = label_list
+                    else:
+                        entry['labels'] = []
+                except (NameError, SyntaxError):
+                    entry['labels'] = []
+
+            # cut long files and take 10 seconds. first 30 seconds only if available
+            orig_data = label_data.get('original_data', 0)
+            
+            duration = orig_data.get('audio_size', 0)
+
+
+            if duration > 10:  
+                num_copies = min(int((duration-10) / 10), 2)
+                for i in range(num_copies):
+                    new_entry = entry.copy()
+                    new_entry['frame_offset'] = (i+1) * 10
+                    new_data.append(new_entry)
+
+            # find very short files
+            if duration < 0.2:  
+                entries_to_remove.append(entry)
+        
+        # Remove the entries from data
+        for entry in entries_to_remove:
+            data.remove(entry)
+
+        # add new entries
+        data.extend(new_data)
+
+        # # Wrap the final dictionary with the split name
+        # result = {split: data}
+
+        return data
+    
+
+    def __len__(self):
+        return len(self.captions)
+
+    def __getitem__(self, idx):
+
+        #             preprocess,
+        #     audio_ext=audio_ext,
+        #     text_ext=text_ext,
+        #     max_len=max_len,
+        #     audio_cfg=model_cfg["audio_cfg"],
+        #     class_index_dict=copy.deepcopy(args.class_index_dict),
+        #     data_filling=args.data_filling,
+        #     data_truncating=args.data_truncating,
+        #     text_augment_selection=args.text_augment_selection,
+        # )
+
+        sample = {}
+        audio_data, orig_sr =torchaudio.load(self.images[idx], frame_offset =  self.frame_offset[idx], num_frames = 160000)
+
+        audio_data = audio_data[0] # taking left channel only
+
+        # new_sr = 16000
+        # resample_transform = torchaudio.transforms.Resample(orig_sr, new_sr)
+        # audio_data = resample_transform(audio_data)
+
+        new_sr = 48000
+        resample_transform = torchaudio.transforms.Resample(orig_sr, new_sr)
+        audio_data = resample_transform(audio_data)
+
+        sample = get_audio_features(
+            sample, audio_data, max_len = new_sr*10, data_truncating = self.args.data_truncating, data_filling = self.args.data_filling, audio_cfg = self.transforms["audio_cfg"]
+        )
+
+        machine_codes = self.labels[idx]  #str(self.captions[idx])
+
+        if self.class_index_dict is not None:
+            # https://stackoverflow.com/questions/48004243/how-to-share-large-read-only-dictionary-list-across-processes-in-multiprocessing
+            # https://stackoverflow.com/questions/45693949/storing-strings-in-a-multiprocessing-sharedctypes-array
+            # key, val = class_index_dict
+            # key = key[:].split('\n')
+            # _dict = {k: v for k, v in zip(key, val)}
+            sample["class_label"] = np.zeros(len(self.class_index_dict.keys()))
+
+            for label_str in machine_codes:
+                try:    
+                    sample["class_label"][int(self.class_index_dict[label_str])] = 1
+                except:
+                    pass                
+
+            sample["class_label"] = torch.tensor(sample["class_label"]).float()
+
+        if len(machine_codes)>0:
+            sample["machine_codes"] = machine_codes[0] ### only show 1 lable if there are more
+        else:
+            if machine_codes == []:
+                sample["machine_codes"] = ""
+            else:
+                sample["machine_codes"] = machine_codes
+
+        sample['__url__'] = self.url[idx]
+
+        text = str(self.captions[idx])
+            
+        text_augment_selection=self.args.text_augment_selection
+
+        # For selecting augmented text from dataset
+        if text_augment_selection is None or text_augment_selection == "none":
+            texts = text
+        else:
+            raise NotImplementedError(
+                f"text_augment_selection {text_augment_selection} not implemented"
+            )
+        sample["full_text"] = texts
+    
+        if isinstance(texts, list) and isinstance(texts[0], str) and len(texts) > 1:
+            texts = random.choice(texts)
+        sample["raw_text"] = texts
+        sample["text"] = tokenizer(texts)  # text shape: [num_token]
+
+        sample["audio_name"] = self.images[idx].split("/")[-1]
+        # sample["text_name"] = sample["__key__"].split("/")[-1] + "." + text_ext
+        sample["audio_orig_sr"] = orig_sr
+        return sample
+
+
+class DS_10283_2325_dataset(Dataset):
+    def __init__(self, input_filename, transforms, args = None):
+        logging.debug(f"Loading csv data from {input_filename}.")
+
+        self.args = args
+
+        df = []
+        for datapath in input_filename:
+            data =  self.read_datafile(datapath) 
+            for dictionary in data:
+                dictionary['__url__'] = datapath[:-5] + "/0"  # Removes the ".json" extension
+            df += data
+
+
+        # df = pd.read_csv(input_filename, sep=args.csv_separator)
+
+        self.images = [item['wav'] for item in df]
+        self.images_response = [item['response'] for item in df]
+        self.captions = [item['caption'] for item in df]
+        self.transforms = transforms
+        self.labels = [item['labels'] for item in df]
+        self.frame_offset = [item['frame_offset'] for item in df]
+        self.url = [item['__url__'] for item in df]
+        logging.debug("Done loading data.")
+
+
+        if args.class_index_dict is None:  ### putting empty dict if notheing was given
+            args.class_index_dict  = {} #pd.DataFrame(columns=["index", "display_name"])
+
+        self.class_index_dict=copy.deepcopy(args.class_index_dict)
+
+
+    def read_datafile(self, file_path): # split):
+        """
+        Reads a JSON file and performs operations on its data.
+        
+        Args:
+            file_path (str): The path to the JSON file.
+            split (str): The split name to wrap the final dictionary.
+            
+        Returns:
+            List[Dict[str, Any]]: The modified data as a list of dictionaries.
+        """
+
+
+        # Open the file and read lines
+        with open(file_path, "r") as fp:
+            data_json = json.load(fp)
+            data = data_json["data"]
+
+        dataset_directory = os.path.dirname(file_path)
+        filename = os.path.basename(file_path)
+        # dataset_name = "train" #filename.split('-')[1]
+
+        wav_directory = os.path.abspath(os.path.join(dataset_directory, "wav_files"))
+
+        for entry in data:
+
+            # get audio data path
+            prompt_file_path = os.path.join(wav_directory, entry["audio_prompt"])
+            response_file_path = os.path.join(wav_directory, entry["audio_response"])
+            entry['wav'] = prompt_file_path
+            entry["response"] = response_file_path
+
+        return data
+    
+
+    def __len__(self):
+        return len(self.captions)
+
+    def __getitem__(self, idx):
+
+        #             preprocess,
+        #     audio_ext=audio_ext,
+        #     text_ext=text_ext,
+        #     max_len=max_len,
+        #     audio_cfg=model_cfg["audio_cfg"],
+        #     class_index_dict=copy.deepcopy(args.class_index_dict),
+        #     data_filling=args.data_filling,
+        #     data_truncating=args.data_truncating,
+        #     text_augment_selection=args.text_augment_selection,
+        # )
+
+        sample = {}
+        audio_data, sr =torchaudio.load(self.images[idx], frame_offset =  self.frame_offset[idx], num_frames = 480000)
+        audio_data_response, sr =torchaudio.load(self.images_response[idx], frame_offset =  self.frame_offset[idx], num_frames = 480000)
+
+        audio_data = audio_data[0] # taking left channel only
+        audio_data_response = audio_data_response[0] # taking left channel only
+
+        sample = get_audio_features(
+            sample, audio_data, max_len = sr*10, data_truncating = self.args.data_truncating, data_filling = self.args.data_filling, audio_cfg = self.transforms["audio_cfg"]
+        )
+
+        sample["response"] = audio_data_response
+
+        machine_codes = self.labels[idx]  #str(self.captions[idx])
+
+        if self.class_index_dict is not None:
+            # https://stackoverflow.com/questions/48004243/how-to-share-large-read-only-dictionary-list-across-processes-in-multiprocessing
+            # https://stackoverflow.com/questions/45693949/storing-strings-in-a-multiprocessing-sharedctypes-array
+            # key, val = class_index_dict
+            # key = key[:].split('\n')
+            # _dict = {k: v for k, v in zip(key, val)}
+            sample["class_label"] = np.zeros(len(self.class_index_dict.keys()))
+
+            for label_str in machine_codes:
+                try:    
+                    sample["class_label"][int(self.class_index_dict[label_str])] = 1
+                except:
+                    pass                
+
+            sample["class_label"] = torch.tensor(sample["class_label"]).float()
+
+        if len(machine_codes)>0:
+            sample["machine_codes"] = machine_codes[0] ### only show 1 lable if there are more
+        else:
+            if machine_codes == []:
+                sample["machine_codes"] = ""
+            else:
+                sample["machine_codes"] = machine_codes
+
+        sample['__url__'] = self.url[idx]
+
+        text = str(self.captions[idx])
+            
+        text_augment_selection=self.args.text_augment_selection
+
+        # For selecting augmented text from dataset
+        if text_augment_selection is None or text_augment_selection == "none":
+            texts = text
+        else:
+            raise NotImplementedError(
+                f"text_augment_selection {text_augment_selection} not implemented"
+            )
+        sample["full_text"] = texts
+    
+        if isinstance(texts, list) and isinstance(texts[0], str) and len(texts) > 1:
+            texts = random.choice(texts)
+        sample["raw_text"] = texts
+        sample["text"] = tokenizer(texts)  # text shape: [num_token]
+
+        sample["audio_name"] = self.images[idx].split("/")[-1]
+        # sample["text_name"] = sample["__key__"].split("/")[-1] + "." + text_ext
+        sample["audio_orig_sr"] = sr
+        return sample
+
+
 @dataclass
 class DataInfo:
     dataloader: DataLoader
@@ -836,11 +1212,69 @@ def get_toy_dataset(args, model_cfg, is_train):
     return DataInfo(dataloader, sampler)
 
 
+def get_Audiostock_10k_16khz_dataset(args, preprocess_fn, is_train):
+    input_filename = args.train_data if is_train else args.val_data
+    assert input_filename
+
+    dataset = Audiostock_10k_16khz_dataset(
+        input_filename,
+        preprocess_fn,
+        args=args
+    )    
+    num_samples = len(dataset)
+    sampler = DistributedSampler(dataset) if args.distributed and is_train else None
+    shuffle = is_train and sampler is None
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=shuffle,
+        num_workers=args.workers,
+        pin_memory=True,
+        sampler=sampler,
+        drop_last=is_train,
+    )
+    dataloader.num_samples = num_samples
+    dataloader.num_batches = len(dataloader)
+
+    return DataInfo(dataloader, sampler)
+
+def get_DS_10283_2325(args, preprocess_fn, is_train):
+    input_filename = args.train_data if is_train else args.val_data
+    assert input_filename
+
+    dataset = DS_10283_2325_dataset(
+        input_filename,
+        preprocess_fn,
+        args=args
+    )    
+    num_samples = len(dataset)
+    sampler = DistributedSampler(dataset) if args.distributed and is_train else None
+    shuffle = is_train and sampler is None
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=shuffle,
+        num_workers=args.workers,
+        pin_memory=True,
+        sampler=sampler,
+        drop_last=is_train,
+    )
+    dataloader.num_samples = num_samples
+    dataloader.num_batches = len(dataloader)
+
+    return DataInfo(dataloader, sampler)
+
 def get_dataset_fn(dataset_type):
     if dataset_type == "webdataset":
         return get_wds_dataset
     elif dataset_type == "toy":
         return get_toy_dataset
+    elif dataset_type == "Audiostock-10k-16khz":
+        return get_Audiostock_10k_16khz_dataset
+    elif dataset_type == 'DS_10283_2325':
+        return get_DS_10283_2325
     else:
         raise ValueError(f"Unsupported dataset type: {dataset_type}")
 
@@ -879,6 +1313,36 @@ def get_data(args, model_cfg):
             dataset_path=args.datasetpath,
             full_dataset=None,
         )
+
+    if args.dataset_type == "Audiostock-10k-16khz":
+        assert len(args.datasetnames) == len(args.datasetinfos), "datasetnames datasetinfos must have equal sizes."
+        files = []
+        # dataset_names = []
+        for root, _, file_names in os.walk(args.datasetpath):
+            for file_name, dataset_info in zip(args.datasetnames, args.datasetinfos):
+                file_path = os.path.join(root, file_name + ".txt")
+                if os.path.exists(file_path):
+                    files.append((file_path, os.path.basename(os.path.dirname(os.path.dirname(file_path))), dataset_info))
+
+        
+        args.train_data = [pair[0] for pair in files if pair[2] == 'train']
+        args.val_data = [pair[0] for pair in files if pair[2] == 'valid']
+        args.val_dataset_names = [pair[1] for pair in files if pair[2] == 'valid']
+
+    if args.dataset_type == "DS_10283_2325":
+        assert len(args.datasetnames) == len(args.datasetinfos), "datasetnames datasetinfos must have equal sizes."
+        files = []
+        # dataset_names = []
+        for root, _, file_names in os.walk(args.datasetpath):
+            for file_name, dataset_info in zip(args.datasetnames, args.datasetinfos):
+                file_path = os.path.join(root, file_name + ".json")
+                if os.path.exists(file_path):
+                    files.append((file_path, os.path.basename(os.path.dirname(file_path)), dataset_info))
+
+        
+        args.train_data = [pair[0] for pair in files if pair[2] == 'train']
+        args.val_data = [pair[0] for pair in files if pair[2] == 'valid']
+        args.val_dataset_names = [pair[1] for pair in files if pair[2] == 'valid']
 
     if args.train_data:
         data["train"] = get_dataset_fn(args.dataset_type)(

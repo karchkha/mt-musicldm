@@ -31,6 +31,13 @@ def parse_args():
         help="if you need to freeze the text encoder, make this True",
     )
     parser.add_argument(
+        "--freeze-audio",
+        type=bool,
+        default=False,
+        # action="store_true",
+        help="if you need to freeze the audio encoder, make this True",
+    )
+    parser.add_argument(
         "--freeze-text-after",
         type=int,
         default=-1,
@@ -62,7 +69,7 @@ def parse_args():
     )
     parser.add_argument(
         "--dataset-type",
-        choices=["webdataset", "csv", "auto", "toy"],
+        choices=["webdataset", "csv", "auto", "toy", "Audiostock-10k-16khz", "DS_10283_2325"],
         default="auto",
         help="Which type of dataset to process.",
     )
@@ -407,6 +414,9 @@ def parse_args():
         action="store_true",
         help="Don't set device index from local rank (when CUDA_VISIBLE_DEVICES restricted to one per proc).",
     )
+
+    parser.add_argument("--use-this-gpu", type=int, default=0, help="use this gpu by default.")
+
     parser.add_argument("--seed", type=int, default=4242, help="Default random seed.")
 
     parser.add_argument(
@@ -509,6 +519,11 @@ def parse_args():
         default=False,
         action="store_true",
         help="Using MLP loss for CLAP model or not",
+    )
+    parser.add_argument(
+        "--mse-loss",
+        default=False,
+        help="Using for trainig of response clap",
     )
 
     parser.add_argument(
