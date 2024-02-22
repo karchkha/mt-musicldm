@@ -920,7 +920,7 @@ class Response_CLAP(nn.Module):
         x = self.text_projection(x["embedding"])
         return x
 
-    def get_response_input(self, audio, text):
+    def get_response_input(self, audio):
         # Create a deep copy of the audio dictionary
         audio_copy = copy.deepcopy(audio)
         
@@ -941,38 +941,42 @@ class Response_CLAP(nn.Module):
         """
 
         # make it compatible with CLAP training pipeline
-        text = self.get_response_input(audio, text)
+        response = self.get_response_input(audio)
 
         if device is None:
             if audio is not None:
                 device = audio.device
-            elif text is not None:
-                device = text.device
-        if audio is None and text is None:
-            # a hack to get the logit scale
-            return self.logit_scale_a.exp(), self.logit_scale_t.exp()
-        elif audio is None:
-            return self.encode_text(text, device=device)
-        elif text is None:
-            return self.audio_projection(
-                self.encode_audio(audio, device=device)["embedding"]
-            )
+            elif response is not None:
+                device = response.device
+
+        # if audio is None and response is None:
+        #     # a hack to get the logit scale
+        #     return self.logit_scale_a.exp(), self.logit_scale_t.exp()
+        # elif audio is None:
+        #     return self.encode_response(response, device=device)
+        # elif response is None:
+        #     return self.audio_projection(
+        #         self.encode_audio(audio, device=device)["embedding"]
+        #     )
+
+        # Audio branch takes responce audio
         audio_features = self.audio_projection(
-            self.encode_audio(audio, device=device)["embedding"]
+            self.encode_audio(response, device=device)["embedding"]
         )
         audio_features = F.normalize(audio_features, dim=-1)
-
-        text_features = self.encode_text(text, device=device)
-        text_features = F.normalize(text_features, dim=-1)
+        
+        # Response branch takes orig audio
+        response_features = self.encode_text(audio, device=device)
+        response_features = F.normalize(response_features, dim=-1)
 
         audio_features_mlp = self.audio_transform(audio_features)
-        text_features_mlp = self.text_transform(text_features)
+        response_features_mlp = self.text_transform(response_features)
         # Four outputs: audio features (basic & MLP), text features (basic & MLP)
         return (
             audio_features,
-            text_features,
+            response_features,
             audio_features_mlp,
-            text_features_mlp,
+            response_features_mlp,
             self.logit_scale_a.exp(),
             self.logit_scale_t.exp(),
         )
@@ -981,26 +985,33 @@ class Response_CLAP(nn.Module):
         return self.logit_scale_a.exp(), self.logit_scale_t.exp()
 
     def get_text_embedding(self, data):
-        """Get the text embedding from the model
+
+        """Get the audio embedding from the model's response branch
 
         Parameters
         ----------
-        data: torch.Tensor
-            a tensor of text embedding
+        data: a list of dict
+            the audio input dict list from 'get_audio_feature' method
 
         Returns
         ----------
-        text_embed: torch.Tensor
-            a tensor of text_embeds (N, D)
+        audio_embed: torch.Tensor
+            a tensor of audio_embeds (N, D)
 
         """
         device = next(self.parameters()).device
-        # for k in data:
-        #     data[k] = data[k].to(device)
-        text_embeds = self.encode_text(data, device=device)
-        text_embeds = F.normalize(text_embeds, dim=-1)
+        input_dict = {}
+        keys = data[0].keys()
+        for k in keys:
+            input_dict[k] = torch.cat([d[k].unsqueeze(0) for d in data], dim=0).to(
+                device
+            )
 
-        return text_embeds
+        embeds = self.encode_text(input_dict, device=device)
+        embeds = F.normalize(embeds, dim=-1)
+
+        return embeds
+
 
     def get_audio_embedding(self, data):
         """Get the audio embedding from the model

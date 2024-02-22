@@ -561,8 +561,8 @@ class DS_10283_2325_dataset(Dataset):
         # )
 
         sample = {}
-        audio_data, sr =torchaudio.load(self.images[idx], frame_offset =  self.frame_offset[idx], num_frames = 480000)
-        audio_data_response, sr =torchaudio.load(self.images_response[idx], frame_offset =  self.frame_offset[idx], num_frames = 480000)
+        audio_data, sr =torchaudio.load(self.images[idx], frame_offset =  self.frame_offset[idx]*48000, num_frames = 480000)
+        audio_data_response, sr =torchaudio.load(self.images_response[idx], frame_offset =  self.frame_offset[idx]*48000, num_frames = 480000)
 
         audio_data = audio_data[0] # taking left channel only
         audio_data_response = audio_data_response[0] # taking left channel only

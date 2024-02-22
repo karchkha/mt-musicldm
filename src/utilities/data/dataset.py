@@ -59,26 +59,9 @@ class TextDataset(Dataset):
 class AudiostockDataset(Dataset):
     def __init__(self, dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False) -> None:
         super().__init__()
-        self.data = [os.path.join(dataset_path, f) for f in os.listdir(dataset_path)]
-        if (not train) and len(self.data) > 2000:
-            data_dict = {}
-            filelist = [os.path.basename(f).split('.')[0].split('_') for f in self.data]
-            for f,idx in filelist:
-                if f not in data_dict:
-                    data_dict[f] = int(idx)
-                else:
-                    data_dict[f] = max(int(idx), data_dict[f])
-            self.data = [os.path.join(dataset_path, f'{k}_{data_dict[k] // 2}.wav') for k in data_dict.keys()] + \
-                [os.path.join(dataset_path, f'{k}_0.wav') for k in data_dict.keys()] + \
-                [os.path.join(dataset_path, f'{k}_{data_dict[k]}.wav') for k in data_dict.keys()]
-
         
-        self.label = []
-        if label_path is not None:
-            for d in self.data:
-                lp = os.path.join(label_path, os.path.basename(d).split('.')[0] + '.json')
-                assert os.path.exists(lp), f'the label file {lp} does not exists.'
-                self.label.append(lp)
+        self.read_datafile(dataset_path, label_path, train)
+
 
         self.total_len = int(len(self.data) * factor)
         self.train = train
@@ -131,7 +114,29 @@ class AudiostockDataset(Dataset):
         )
 
         print(f'| Audiostock Dataset Length:{len(self.data)} | Epoch Length: {self.total_len}')
-    
+
+    def read_datafile(self, dataset_path, label_path, train):
+        self.data = [os.path.join(dataset_path, f) for f in os.listdir(dataset_path)]
+        if (not train) and len(self.data) > 2000:
+            data_dict = {}
+            filelist = [os.path.basename(f).split('.')[0].split('_') for f in self.data]
+            for f,idx in filelist:
+                if f not in data_dict:
+                    data_dict[f] = int(idx)
+                else:
+                    data_dict[f] = max(int(idx), data_dict[f])
+            self.data = [os.path.join(dataset_path, f'{k}_{data_dict[k] // 2}.wav') for k in data_dict.keys()] + \
+                [os.path.join(dataset_path, f'{k}_0.wav') for k in data_dict.keys()] + \
+                [os.path.join(dataset_path, f'{k}_{data_dict[k]}.wav') for k in data_dict.keys()]
+
+        
+        self.label = []
+        if label_path is not None:
+            for d in self.data:
+                lp = os.path.join(label_path, os.path.basename(d).split('.')[0] + '.json')
+                assert os.path.exists(lp), f'the label file {lp} does not exists.'
+                self.label.append(lp)    
+                
     def random_segment_wav(self, x):
         wav_len = x.shape[-1]
         assert wav_len > 100, "Waveform is too short, %s" % wav_len
@@ -297,6 +302,102 @@ class AudiostockDataset(Dataset):
 
     def __len__(self):
         return self.total_len
+
+
+
+class DS_10283_2325_Dataset(AudiostockDataset):
+    def __init__(self, dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False) -> None:
+        super().__init__(dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False)  
+
+    def read_datafile(self, dataset_path, label_path, train):
+        file_path = dataset_path
+        # Open the file and read lines
+        with open(file_path, "r") as fp:
+            data_json = json.load(fp)
+            data = data_json["data"]
+
+        dataset_directory = os.path.dirname(file_path)
+        filename = os.path.basename(file_path)
+        # dataset_name = "train" #filename.split('-')[1]
+
+        wav_directory = os.path.abspath(os.path.join(dataset_directory, "wav_files"))
+
+        for entry in data:
+
+            # get audio data path
+            prompt_file_path = os.path.join(wav_directory, entry["audio_prompt"])
+            response_file_path = os.path.join(wav_directory, entry["audio_response"])
+            entry['wav'] = prompt_file_path
+            entry["response"] = response_file_path
+
+        self.data = data
+        self.label = data
+
+    def read_wav(self, filename, frame_offset):
+
+        audio_data, sr =torchaudio.load(filename, frame_offset =  frame_offset*48000, num_frames = 480000)
+
+        # resample
+        if sr != self.sampling_rate:
+            y = torchaudio.functional.resample(audio_data, sr, self.sampling_rate)
+        # normalize
+        y = self.normalize_wav(y)
+        # segment
+        y = self.random_segment_wav(y)
+        # pad
+        if not self.whole_track:
+            y = torch.nn.functional.pad(y, (0, self.segment_length - y.size(1)), 'constant', 0.)
+        return y
+    
+    def get_mel(self, filename, mix_filename = None, frame_offset = 0):
+        # mixup
+        y = self.read_wav(filename, frame_offset)
+        
+        # get mel
+        y.requires_grad=False
+        melspec, _, _ = self.STFT.mel_spectrogram(y)
+        melspec = melspec[0].T
+        if melspec.size(0) < self.target_length:
+            melspec = torch.nn.functional.pad(melspec, (0,0,0,self.target_length - melspec.size(0)), 'constant', 0.)
+        else:
+            if not self.whole_track:
+                melspec = melspec[0: self.target_length, :]
+        if melspec.size(-1) % 2 != 0:
+            melspec = melspec[:, :-1]
+        
+        if self.return_all_wav:
+            if mix_filename is None:
+                anchor_melspec = melspec
+                target_melspec = melspec
+
+            return y[0].numpy(), melspec.numpy(), anchor_melspec.numpy(), target_melspec.numpy()
+        else:
+            return y[0].numpy(), melspec.numpy()
+            
+    def __getitem__(self, index):
+        idx = index % len(self.data)
+        data_dict = {}
+        f = self.data[idx]
+        lf = self.label[idx]
+        if lf is not None:
+            text = lf['text']
+        else:
+            text = ""        
+        
+        
+        waveform, fbank = self.get_mel(f["wav"], None, f["frame_offset"])
+        response, fbank_response = self.get_mel(f["response"], None, f["frame_offset"])
+
+        # construct dict
+        data_dict['fname'] = os.path.basename(lf['text']).split('.')[0]+"_from_"+str(f["frame_offset"])
+        data_dict['fbank'] = fbank
+        data_dict['waveform'] = waveform
+        data_dict['text'] = text
+
+        data_dict['fbank_response'] = fbank_response
+        data_dict['waveform_response'] = response
+
+        return data_dict
 
 
 class Dataset(Dataset):

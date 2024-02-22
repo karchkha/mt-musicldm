@@ -130,13 +130,14 @@ def create_model(
         #         model_cfg['vision_cfg']['timm_model_pretrained'] = True
         #     else:
         #         assert False, 'pretrained image towers currently only supported for timm models'
-        # model_cfg["text_cfg"]["model_type"] = tmodel_name
+        
         model_cfg["enable_fusion"] = enable_fusion
         model_cfg["fusion_type"] = fusion_type
 
         if "response" in amodel_name:
             model = Response_CLAP(**model_cfg)
         else:
+            model_cfg["text_cfg"]["model_type"] = tmodel_name
             model = CLAP(**model_cfg)
 
         if pretrained:

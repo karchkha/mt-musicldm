@@ -14,7 +14,7 @@ from pathlib import Path
 
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from latent_diffusion.models.musicldm import MusicLDM
-from utilities.data.dataset import AudiostockDataset
+from utilities.data.dataset import AudiostockDataset, DS_10283_2325_Dataset
 
 from torch.utils.data import WeightedRandomSampler
 from torch.utils.data import DataLoader
@@ -22,6 +22,8 @@ from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 from utilities.tools import listdir_nohidden, get_restore_step, copy_test_subset_data
+
+# from latent_diffusion.util import instantiate_from_config
     
     
 
@@ -63,6 +65,40 @@ def main(config):
             shuffle=False,
             num_workers=config['model']['num_workers']
         )
+    elif config['path']['dataset_type'] == 'DS_10283_2325':
+        dataset = DS_10283_2325_Dataset(
+                dataset_path=config["path"]["train_data"],
+                label_path=config["path"]["label_data"],
+                config=config,
+                train=True,
+                factor=1.0
+            )
+        loader = DataLoader(
+            dataset,
+            shuffle=True,
+            batch_size=batch_size,
+            num_workers=config['model']['num_workers'],
+            pin_memory=True
+        )
+
+        val_dataset = DS_10283_2325_Dataset(
+            dataset_path=config["path"]["test_data"],
+            label_path=config["path"]["label_data"],
+            config=config,
+            train=False,
+            factor=1.0
+        )
+
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=config['model']['num_workers']
+        )
+
+    # data = instantiate_from_config(config["data"])
+    # data.prepare_data()
+    # data.setup()
 
     # adding a random number of seconds so that exp folder names coincide less often
     random_seconds_shift = datetime.timedelta(seconds=np.random.randint(60))
@@ -99,7 +135,7 @@ def main(config):
             if Path(os.path.join(logdir, 'checkpoints', 'last.ckpt')).exists():
                 ckpt = os.path.join(logdir, 'checkpoints', 'last.ckpt')
             else:
-                ckpt = sorted(Path(logdir).glob('checkpoints/*.ckpt'))[-1]
+                ckpt = None #sorted(Path(logdir).glob('checkpoints/*.ckpt'))[-1]
 
         resume_from_checkpoint = ckpt
         # base_configs = sorted(glob.glob(os.path.join(logdir, 'configs/*.yaml')))
