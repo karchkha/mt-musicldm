@@ -648,7 +648,7 @@ class DDPM(pl.LightningModule):
                     "Evaluate model output based on the Audiostock test set: %s"
                     % self.test_data_subset_path
                 )
-                device = torch.device(f"cuda:{0}")
+                device = self.device #torch.device(f"cuda:{0}")
                 name = self.get_validation_folder_name()
                 waveform_save_path = os.path.join(self.get_log_dir(), name)
                 if (
