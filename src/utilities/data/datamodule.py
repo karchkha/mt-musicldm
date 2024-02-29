@@ -2,7 +2,7 @@ import os
 import pytorch_lightning as pl
 from omegaconf import OmegaConf
 from src.latent_diffusion.util import instantiate_from_config
-from utilities.data.dataset import AudiostockDataset
+from utilities.data.dataset import AudiostockDataset, DS_10283_2325_Dataset
 import torch
 import omegaconf
 
@@ -10,12 +10,19 @@ import omegaconf
 
 
 class DataModuleFromConfig(pl.LightningDataModule):
-    def __init__(self, batch_size=2, num_workers=1, path=None, config = None):
+    def __init__(self, batch_size=2, num_workers=1, augmentation= None, path=None, preprocessing=None, config = None):
         super().__init__()
         self.batch_size = batch_size
         self.num_workers = num_workers # if num_workers is not None else batch_size*2
         self.path = path
-        self.config = config
+        self.augmentation=augmentation
+        self.preprocessing=preprocessing
+        
+        self.config = {}
+        self.config["path"] = path
+        self.config["preprocessing"] = preprocessing
+        self.config["augmentation"] = augmentation
+
 
     def prepare_data(self):
         # This method is used for data download and preprocessing (if any)
@@ -56,7 +63,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
     #         raise ValueError(f"Unsupported data format: {self.data_format}")
 
     def get_data_handler(self, path):
-        keywords = ['Audiostock']  # Keywords to identify data handlers
+        keywords = ['Audiostock', 'DS_10283_2325']  # Keywords to identify data handlers
         handler = None
         if type(path) is list or type(path) is omegaconf.listconfig.ListConfig:
             
@@ -77,8 +84,8 @@ class DataModuleFromConfig(pl.LightningDataModule):
             if keyword in path:
                 if keyword == 'Audiostock':
                     handler = AudiostockDataset
-                # elif keyword == 'wavcaps':
-                #     handler = WavCaps_Dataset
+                elif keyword == 'DS_10283_2325':
+                    handler = DS_10283_2325_Dataset
 
                 print(f"Data format '{keyword}' detected. Using {handler.__name__} as the data handler for: {path} ")
         if handler is None:
@@ -90,14 +97,22 @@ class DataModuleFromConfig(pl.LightningDataModule):
     def load_dataset(self, path, split = "train"):
 
         dataset_subclass = self.get_data_handler(path)
-
-        return dataset_subclass( 
-                            dataset_path=path,
-                            label_path=config["path"]["label_data"],
-                            config=config,
-                            train=True,
-                            factor=1.0        
-                            )
+        if split == "train":
+            return dataset_subclass( 
+                                dataset_path=path,
+                                label_path=self.config["path"]["label_data"],
+                                config=self.config,
+                                train=True,
+                                factor=1.0        
+                                )
+        else:
+            return dataset_subclass( 
+                                dataset_path=path,
+                                label_path=self.config["path"]["label_data"],
+                                config=self.config,
+                                train=False,
+                                factor=1.0        
+                                )
                             # preprocess_config = self.preprocessing,  
                             # train_config = self.augmentation, 
                             # path =  path, 

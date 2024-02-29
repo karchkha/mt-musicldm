@@ -23,7 +23,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 from utilities.tools import listdir_nohidden, get_restore_step, copy_test_subset_data
 
-# from latent_diffusion.util import instantiate_from_config
+from latent_diffusion.util import instantiate_from_config
     
     
 
@@ -35,70 +35,9 @@ def main(config):
 
     print(f'Batch Size {batch_size} | Log Folder {log_path}')
 
-    if config['path']['dataset_type'] == 'audiostock':
-        dataset = AudiostockDataset(
-                dataset_path=config["path"]["train_data"],
-                label_path=config["path"]["label_data"],
-                config=config,
-                train=True,
-                factor=1.0
-            )
-        loader = DataLoader(
-            dataset,
-            shuffle=True,
-            batch_size=batch_size,
-            num_workers=config['model']['num_workers'],
-            pin_memory=True
-        )
-
-        val_dataset = AudiostockDataset(
-            dataset_path=config["path"]["test_data"],
-            label_path=config["path"]["label_data"],
-            config=config,
-            train=False,
-            factor=1.0
-        )
-
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=config['model']['num_workers']
-        )
-    elif config['path']['dataset_type'] == 'DS_10283_2325':
-        dataset = DS_10283_2325_Dataset(
-                dataset_path=config["path"]["train_data"],
-                label_path=config["path"]["label_data"],
-                config=config,
-                train=True,
-                factor=1.0
-            )
-        loader = DataLoader(
-            dataset,
-            shuffle=True,
-            batch_size=batch_size,
-            num_workers=config['model']['num_workers'],
-            pin_memory=True
-        )
-
-        val_dataset = DS_10283_2325_Dataset(
-            dataset_path=config["path"]["test_data"],
-            label_path=config["path"]["label_data"],
-            config=config,
-            train=False,
-            factor=1.0
-        )
-
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=config['model']['num_workers']
-        )
-
-    # data = instantiate_from_config(config["data"])
-    # data.prepare_data()
-    # data.setup()
+    data = instantiate_from_config(config["data"])
+    data.prepare_data()
+    data.setup()
 
     # adding a random number of seconds so that exp folder names coincide less often
     random_seconds_shift = datetime.timedelta(seconds=np.random.randint(60))
@@ -183,8 +122,8 @@ def main(config):
     ]
     save_top_k = config["trainer"]["save_top_k"]
 
-    if validation_every_n_steps > len(loader):
-        validation_every_n_epochs = int(validation_every_n_steps / len(loader))
+    if validation_every_n_steps > len(data.train_dataset):
+        validation_every_n_epochs = int(validation_every_n_steps / len(data.train_dataset))
         validation_every_n_steps = None
     else:
         validation_every_n_epochs = None
@@ -244,7 +183,7 @@ def main(config):
 
 
     latent_diffusion = MusicLDM(**config["model"]["params"])
-    latent_diffusion.test_data_subset_path = config['path']['test_data']
+    latent_diffusion.test_data_subset_path = config["data"]["params"]['path']['test_data']
     trainer = Trainer(
         max_epochs=max_epochs,
         accelerator=accelerator,
@@ -263,13 +202,13 @@ def main(config):
     )
     if config['mode'] in ["test", "validate"]:
         # Evaluation / Validation
-        trainer.validate(latent_diffusion, val_loader)
+        trainer.validate(latent_diffusion, data)
     if config['mode'] == "validate_and_train":
         # Training
-        trainer.validate(latent_diffusion, val_loader)
-        trainer.fit(latent_diffusion, loader, val_loader)
+        trainer.validate(latent_diffusion, data)
+        trainer.fit(latent_diffusion, data)
     elif config['mode'] == "train":
-        trainer.fit(latent_diffusion, loader, val_loader)
+        trainer.fit(latent_diffusion, data)
 
 
 if __name__ == "__main__":
