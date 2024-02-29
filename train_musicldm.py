@@ -202,8 +202,10 @@ def main(config):
 
     checkpoint_callback = ModelCheckpoint(
         dirpath= checkpoint_path,
-        monitor="global_step",
-        mode="max",
+        # monitor="global_step",
+        # mode="max",
+        monitor = config["model"]["params"]["monitor"],
+        mode="min",
         filename="checkpoint-fad-{val/frechet_inception_distance:.2f}-global_step={global_step:.0f}", #TODO :FAD = frechet_audio_distance, no?
         every_n_train_steps=save_checkpoint_every_n_steps,
         save_top_k=save_top_k,

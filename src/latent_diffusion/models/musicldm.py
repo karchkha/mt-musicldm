@@ -944,9 +944,11 @@ class MusicLDM(DDPM):
                 if isinstance(c, DiagonalGaussianDistribution):
                     c = c.mode()
             else:
-                if len(c) == 1:
+                if len(c) == 1 and self.cond_stage_model.embed_mode == "text":
                     c = self.cond_stage_model([c[0], c[0]])
                     c = c[0:1]
+                elif isinstance(c, (np.ndarray, torch.Tensor)) and len(c.shape) == 1:
+                    c = self.cond_stage_model(c.unsqueeze(0))
                 else:
                     c = self.cond_stage_model(c)
         else:
