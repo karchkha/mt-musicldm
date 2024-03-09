@@ -616,32 +616,33 @@ class DDPM(pl.LightningModule):
                 n_gen=self.evaluation_params["n_candidates_per_samples"],
             )
 
-            _, loss_dict_no_ema = self.shared_step(batch)
-            with self.ema_scope():
-                _, loss_dict_ema = self.shared_step(batch)
-                loss_dict_ema = {
-                    key + "_ema": loss_dict_ema[key] for key in loss_dict_ema
-                }
-            self.log_dict(
-                loss_dict_no_ema,
-                prog_bar=False,
-                logger=True,
-                on_step=False,
-                on_epoch=True,
-            )
-            self.log_dict(
-                loss_dict_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True
-            )
+        _, loss_dict_no_ema = self.shared_step(batch)
+        with self.ema_scope():
+            _, loss_dict_ema = self.shared_step(batch)
+            loss_dict_ema = {
+                key + "_ema": loss_dict_ema[key] for key in loss_dict_ema
+            }
+        self.log_dict(
+            loss_dict_no_ema,
+            prog_bar=False,
+            logger=True,
+            on_step=False,
+            on_epoch=True,
+        )
+        self.log_dict(
+            loss_dict_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True
+        )
 
     def get_validation_folder_name(self):
         return "val_%s" % (self.global_step)
 
+    @torch.no_grad()
     def on_validation_epoch_end(self) -> None:
-        if self.cond_stage_model.embed_mode == "response":
-            self.test_data_subset_path = os.path.join(self.get_log_dir(), "target_%s" % (self.global_step))
+        if self.global_rank == 0:
+            if self.cond_stage_model.embed_mode == "prompt":
+                self.test_data_subset_path = os.path.join(self.get_log_dir(), "target_%s" % (self.global_step))
     
-        if self.test_data_subset_path is not None:
-            if self.global_rank == 0:
+            if self.test_data_subset_path is not None:
                 from audioldm_eval import EvaluationHelper
 
                 print(
@@ -2116,7 +2117,7 @@ class MusicLDM(DDPM):
         os.makedirs(waveform_save_path, exist_ok=True)
         # print("\nWaveform save path: ", waveform_save_path)
 
-        if self.cond_stage_model.embed_mode == "response":
+        if self.cond_stage_model.embed_mode == "prompt":
             waveform_orig_save_path = os.path.join(self.get_log_dir(), "orig_%s" % (self.global_step))
             os.makedirs(waveform_orig_save_path, exist_ok=True)
             # print("\nWaveform orig save path: ", waveform_orig_save_path)                  
@@ -2151,7 +2152,14 @@ class MusicLDM(DDPM):
                     if c is not None:
                         c = torch.cat([c] * n_gen, dim=0)
                     text = text * n_gen
-                else:
+                elif self.cond_stage_model.embed_mode == "prompt":
+                    text = super().get_input(batch, "prompt")
+                    # Generate multiple samples
+                    batch_size = z.shape[0] * n_gen
+                    if c is not None:
+                        c = torch.cat([c] * n_gen, dim=0)
+                    text = torch.cat([text] * n_gen, dim=0)
+                elif self.cond_stage_model.embed_mode == "waveform":
                     text = super().get_input(batch, "waveform")
                     # Generate multiple samples
                     batch_size = z.shape[0] * n_gen
@@ -2204,11 +2212,11 @@ class MusicLDM(DDPM):
                 
                 self.save_waveform(waveform, waveform_save_path, name=fnames)
 
-                if self.cond_stage_model.embed_mode == "response":
+                if self.cond_stage_model.embed_mode == "prompt":
                     orig_waveforms = text[best_index].unsqueeze(1).cpu().detach()
                     self.save_waveform(orig_waveforms, waveform_orig_save_path, name=fnames)
 
-                    target = super().get_input(batch, 'waveform_response')
+                    target = super().get_input(batch, 'waveform')
                     target_waveforms = target.unsqueeze(1).cpu().detach()
                     self.save_waveform(target_waveforms, wavefor_target_save_path, name=fnames)
 
@@ -2232,7 +2240,7 @@ class MusicLDM(DDPM):
         for i in range(mel.shape[0]):
             self.logger.log_image(
                 "Mel_specs %s" % name,
-                [np.flipud(self.tensor2numpy(batch["fbank"][i]).T), np.flipud(self.tensor2numpy(mel[i]).T), np.flipud(self.tensor2numpy(batch["fbank_response"][i]).T) ],
+                [np.flipud(self.tensor2numpy(batch["fbank_prompt"][i]).T), np.flipud(self.tensor2numpy(mel[i]).T), np.flipud(self.tensor2numpy(batch["fbank"][i]).T) ],
                 caption=["prompt_%s" %batch["fname"][i], "response_generated_%s" %batch["fname"][i], "reponse_target_%s" %batch["fname"][i]],
             )
 
@@ -2242,7 +2250,7 @@ class MusicLDM(DDPM):
                 {
                     "prompt_%s"
                     % name: wandb.Audio(
-                        self.tensor2numpy(batch["waveform"])[i], caption= batch["fname"][i], sample_rate=16000,
+                        self.tensor2numpy(batch["prompt"])[i], caption= batch["fname"][i], sample_rate=16000,
                     ),
                     "response_generated_%s"
                     % name: wandb.Audio(
@@ -2250,7 +2258,7 @@ class MusicLDM(DDPM):
                     ),
                     "reponse_target_%s"
                     % name: wandb.Audio(
-                        self.tensor2numpy(batch["waveform_response"])[i], caption= batch["fname"][i]  , sample_rate=16000,
+                        self.tensor2numpy(batch["waveform"])[i], caption= batch["fname"][i]  , sample_rate=16000,
                     ),
                 }
             )

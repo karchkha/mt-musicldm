@@ -2,7 +2,7 @@ import os
 import pytorch_lightning as pl
 from omegaconf import OmegaConf
 from src.latent_diffusion.util import instantiate_from_config
-from utilities.data.dataset import AudiostockDataset, DS_10283_2325_Dataset
+from utilities.data.dataset import AudiostockDataset, DS_10283_2325_Dataset, Audiostock_splited_Dataset
 import torch
 import omegaconf
 
@@ -50,53 +50,55 @@ class DataModuleFromConfig(pl.LightningDataModule):
         if not hasattr(self, 'train_dataset') and not hasattr(self, 'val_dataset') and not hasattr(self, 'test_dataset'):
             raise ValueError("Invalid dataset configuration provided.")
 
-    # def get_data_handler(self):
-    #     if self.path["data_handler"] == "Dcase":
-    #         return Dcase_Dataset
-    #     elif self.path["data_handler"] == "WavCaps":
-    #         return WavCaps_Dataset
-    #     if self.path["data_handler"] == "Clotho":
-    #         return Clotho_Dataset
+    def get_data_handler(self):
+        if self.path["dataset_type"] == "Audiostock":
+            return AudiostockDataset
+        elif self.path["dataset_type"] == "DS_10283_2325":
+            return DS_10283_2325_Dataset
+        if self.path["dataset_type"] == "Audiostock_splited":
+            return Audiostock_splited_Dataset
         
-    #     # Add other types of data here!
-    #     else:
-    #         raise ValueError(f"Unsupported data format: {self.data_format}")
-
-    def get_data_handler(self, path):
-        keywords = ['Audiostock', 'DS_10283_2325']  # Keywords to identify data handlers
-        handler = None
-        if type(path) is list or type(path) is omegaconf.listconfig.ListConfig:
-            
-            print("Attention!!! You are mixing datasets. Please remember to only mix datasets from the same data group by each 'train', 'val', 'test' splits.")
-            detected_keywords = []
-
-            for p in path:
-                for keyword in keywords:
-                    if keyword in p:
-                        if not any(keyword not in detected_keyword for detected_keyword in detected_keywords):
-                            detected_keywords.append(keyword)
-                        else:
-                            raise ValueError("you mixed more that one data group in one split.")
-            path = path[0]
-
-
-        for keyword in keywords:
-            if keyword in path:
-                if keyword == 'Audiostock':
-                    handler = AudiostockDataset
-                elif keyword == 'DS_10283_2325':
-                    handler = DS_10283_2325_Dataset
-
-                print(f"Data format '{keyword}' detected. Using {handler.__name__} as the data handler for: {path} ")
-        if handler is None:
-            raise ValueError(f"Unsupported data format: {path}")
+        # Add other types of data here!
         else:
-            return handler 
+            raise ValueError(f"Unsupported data format: {self.data_format}")
+
+    # def get_data_handler(self, path):
+    #     keywords = ['Audiostock', 'DS_10283_2325', "audiostock_splited"]  # Keywords to identify data handlers
+    #     handler = None
+    #     if type(path) is list or type(path) is omegaconf.listconfig.ListConfig:
+            
+    #         print("Attention!!! You are mixing datasets. Please remember to only mix datasets from the same data group by each 'train', 'val', 'test' splits.")
+    #         detected_keywords = []
+
+    #         for p in path:
+    #             for keyword in keywords:
+    #                 if keyword in p:
+    #                     if not any(keyword not in detected_keyword for detected_keyword in detected_keywords):
+    #                         detected_keywords.append(keyword)
+    #                     else:
+    #                         raise ValueError("you mixed more that one data group in one split.")
+    #         path = path[0]
+
+
+    #     for keyword in keywords:
+    #         if keyword in path:
+    #             if keyword == 'Audiostock':
+    #                 handler = AudiostockDataset
+    #             elif keyword == 'DS_10283_2325':
+    #                 handler = DS_10283_2325_Dataset
+    #             elif keyword == "audiostock_splited":
+    #                 handler = Audiostock_splited_Dataset
+
+    #             print(f"Data format '{keyword}' detected. Using {handler.__name__} as the data handler for: {path} ")
+    #     if handler is None:
+    #         raise ValueError(f"Unsupported data format: {path}")
+    #     else:
+    #         return handler 
 
 
     def load_dataset(self, path, split = "train"):
 
-        dataset_subclass = self.get_data_handler(path)
+        dataset_subclass = self.get_data_handler()
         if split == "train":
             return dataset_subclass( 
                                 dataset_path=path,

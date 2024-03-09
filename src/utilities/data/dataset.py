@@ -59,13 +59,15 @@ class TextDataset(Dataset):
 class AudiostockDataset(Dataset):
     def __init__(self, dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False) -> None:
         super().__init__()
-        
+
+        self.train = train
+        self.config = config
+
         self.read_datafile(dataset_path, label_path, train)
 
 
         self.total_len = int(len(self.data) * factor)
-        self.train = train
-        self.config = config
+
 
         self.melbins = config["preprocessing"]["mel"]["n_mel_channels"]
         self.freqm = config["preprocessing"]["mel"]["freqm"]
@@ -385,17 +387,133 @@ class DS_10283_2325_Dataset(AudiostockDataset):
             text = ""        
         
         
-        waveform, fbank = self.get_mel(f["wav"], None, f["frame_offset"])
+        prompt, fbank_prompt = self.get_mel(f["wav"], None, f["frame_offset"])
         response, fbank_response = self.get_mel(f["response"], None, f["frame_offset"])
 
         # construct dict
         data_dict['fname'] = os.path.basename(lf['text']).split('.')[0]+"_from_"+str(f["frame_offset"])
-        data_dict['fbank'] = fbank
-        data_dict['waveform'] = waveform
+        data_dict['fbank_prompt'] = fbank_prompt
+        data_dict['prompt'] = prompt
         data_dict['text'] = text
 
-        data_dict['fbank_response'] = fbank_response
-        data_dict['waveform_response'] = response
+        data_dict['fbank'] = fbank_response
+        data_dict['waveform'] = response
+
+        return data_dict
+
+
+
+class Audiostock_splited_Dataset(DS_10283_2325_Dataset):
+    def __init__(self, dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False) -> None:
+        super().__init__(dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False)  
+
+    def read_datafile(self, dataset_path, label_path, train):
+        file_path = dataset_path
+        # Open the file and read lines
+        data = []
+        with open(file_path, "r") as fp:
+            data_json = json.load(fp)
+
+        for key, inner_dict in data_json.items():
+            new_dict = inner_dict.copy()  # Create a copy of the inner dictionary
+            new_dict['id'] = key  # Add the key from the outer dictionary
+            data.append(new_dict)        
+
+        prompt = self.config["path"]["prompt"]
+        response = self.config["path"]["response"]
+
+        # here we need logic taht only leaves in data entries that have nothe prompr and reposonse
+
+
+        dataset_directory = os.path.dirname(file_path)
+        filename = os.path.basename(file_path)
+        dataset_name = filename.split('_')[0]
+
+        wav_directory = os.path.abspath(os.path.join(dataset_directory, dataset_name+"_splited_16khz"))
+
+        # Filter out entries where prompt or response is 0
+        data = [entry for entry in data if entry[prompt+".wav"] != 0 and entry[response+".wav"] != 0]
+
+        # iterate to get wav directories and append lable info
+        for entry in data:
+            prompt_file_path = os.path.join(wav_directory, entry["id"], prompt+".wav")
+
+            response_file_path = os.path.join(wav_directory, entry["id"], response+".wav")
+            entry['prompt'] = prompt_file_path
+            entry["response"] = response_file_path
+
+            if label_path is not None:
+                lp = os.path.join(label_path, entry["id"] + '.json')
+                assert os.path.exists(lp), f'the label file {lp} does not exists.'
+                with open(lp, "r") as fp:
+                    label_json = json.load(fp)
+                entry.update(label_json)   
+
+        new_data = []
+        entries_to_remove = []  # List to store entries to be removed
+        for entry in data:
+            entry['frame_offset'] = 0
+            # cut long files and take 10 seconds. first 30 seconds only if available
+            duration = entry['original_data']["audio_size"]
+            if duration > 10:  
+                num_copies = int((min(duration,600)-10) / 10)
+                for i in range(num_copies):
+                    new_entry = entry.copy()
+                    new_entry['frame_offset'] = (i+1) * 10
+                    new_data.append(new_entry)
+
+            # find very short files
+            if duration < 0.2:  
+                entries_to_remove.append(entry)
+        
+        # Remove the entries from data
+        for entry in entries_to_remove:
+            data.remove(entry)
+
+        # add new entries
+        data.extend(new_data)
+
+        self.data = data
+        # self.label = data
+
+
+        print()
+
+    def read_wav(self, filename, frame_offset):
+
+        y, _ =torchaudio.load(filename, frame_offset =  frame_offset*16000, num_frames = 160000)
+
+        # normalize
+        y = self.normalize_wav(y)
+        # segment
+        y = self.random_segment_wav(y)
+        # pad
+        if not self.whole_track:
+            y = torch.nn.functional.pad(y, (0, self.segment_length - y.size(1)), 'constant', 0.)
+        return y
+
+    def __getitem__(self, index):
+        idx = index % len(self.data)
+        data_dict = {}
+        f = self.data[idx]
+        # lf = self.label[idx]
+        # if lf is not None:
+        #     text = lf['text']
+        # else:
+        #     text = ""        
+        text = f['text']
+        
+        prompt, fbank_prompt = self.get_mel(f["prompt"], None, f["frame_offset"])
+        response, fbank_response = self.get_mel(f["response"], None, f["frame_offset"])
+
+        # construct dict
+        data_dict['fname'] = os.path.basename(f['id']).split('.')[0]+"_from_"+str(f["frame_offset"])
+        data_dict['fbank_prompt'] = fbank_prompt
+        data_dict['prompt'] = prompt
+        data_dict['text'] = text
+
+        data_dict['fbank'] = fbank_response
+        data_dict['waveform'] = response
 
         return data_dict
 

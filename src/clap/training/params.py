@@ -69,7 +69,7 @@ def parse_args():
     )
     parser.add_argument(
         "--dataset-type",
-        choices=["webdataset", "csv", "auto", "toy", "Audiostock-10k-16khz", "DS_10283_2325"],
+        choices=["webdataset", "csv", "auto", "toy", "Audiostock-10k-16khz", "DS_10283_2325", "Audiostock_splited"],
         default="auto",
         help="Which type of dataset to process.",
     )
@@ -569,6 +569,20 @@ def parse_args():
         type=int,
         default=None,
         help="The prefetch factor for dataloader. Larger value will use more memory and CPU but faster.",
+    )
+
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        default=None,
+        help="prompt audio type",
+    )
+
+    parser.add_argument(
+        "--response",
+        type=str,
+        default=None,
+        help="response audio type",
     )
 
     args = parser.parse_args()

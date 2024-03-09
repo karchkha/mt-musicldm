@@ -625,6 +625,186 @@ class DS_10283_2325_dataset(Dataset):
         return sample
 
 
+class Audiostock_splited_dataset(DS_10283_2325_dataset):
+    def __init__(self, input_filename, transforms, args = None) -> None:
+        super().__init__(input_filename, transforms, args = args)
+
+    def read_datafile(self, dataset_path):
+        file_path = dataset_path
+        # Open the file and read lines
+        data = []
+        with open(file_path, "r") as fp:
+            data_json = json.load(fp)
+
+        for key, inner_dict in data_json.items():
+            new_dict = inner_dict.copy()  # Create a copy of the inner dictionary
+            new_dict['id'] = key  # Add the key from the outer dictionary
+            data.append(new_dict)        
+
+        prompt = self.args.prompt
+        response = self.args.response
+
+        # here we need logic taht only leaves in data entries that have nothe prompr and reposonse
+
+
+        dataset_directory = os.path.dirname(file_path)
+        filename = os.path.basename(file_path)
+        dataset_name = filename.split('_')[0]
+
+        wav_directory = os.path.abspath(os.path.join(dataset_directory, dataset_name+"_splited_16khz"))
+
+        # Filter out entries where prompt or response is 0
+        data = [entry for entry in data if entry[prompt+".wav"] != 0 and entry[response+".wav"] != 0]
+
+        # iterate to get wav directories and append lable info
+        label_path =os.path.join( self.args.datasetpath,"label")
+        for entry in data:
+            prompt_file_path = os.path.join(wav_directory, entry["id"], prompt+".wav")
+
+            response_file_path = os.path.join(wav_directory, entry["id"], response+".wav")
+            entry['wav'] = prompt_file_path
+            entry["response"] = response_file_path
+
+            if label_path is not None:
+                lp = os.path.join(label_path, entry["id"] + '.json')
+                assert os.path.exists(lp), f'the label file {lp} does not exists.'
+                with open(lp, "r") as fp:
+                    label_json = json.load(fp)
+                entry.update(label_json)   
+
+        new_data = []
+        entries_to_remove = []  # List to store entries to be removed
+        for entry in data:
+
+            entry["caption"] = entry.get("text", 'not available')[0]
+            # get data category if given
+
+            labels = entry.get('tag',  'not available')
+            if labels == 'not available':
+                entry['labels'] = []
+            elif isinstance(labels, list):
+                entry['labels'] = labels
+            else:
+                try:
+                    label_list = eval(labels)
+                    if isinstance(label_list, list):
+                        entry['labels'] = label_list
+                    else:
+                        entry['labels'] = []
+                except (NameError, SyntaxError):
+                    entry['labels'] = []
+
+
+            entry['frame_offset'] = 0
+            # cut long files and take 10 seconds. first 30 seconds only if available
+            duration = entry['original_data']["audio_size"]
+            if duration > 10:  
+                num_copies = int((min(duration,600)-10) / 10)  # max 600 sec
+                for i in range(num_copies):
+                    new_entry = entry.copy()
+                    new_entry['frame_offset'] = (i+1) * 10
+                    new_data.append(new_entry)
+
+            # find very short files
+            if duration < 0.2:  
+                entries_to_remove.append(entry)
+        
+        # Remove the entries from data
+        for entry in entries_to_remove:
+            data.remove(entry)
+
+        # add new entries
+        data.extend(new_data)
+
+        return data
+
+    def __getitem__(self, idx):
+
+        #             preprocess,
+        #     audio_ext=audio_ext,
+        #     text_ext=text_ext,
+        #     max_len=max_len,
+        #     audio_cfg=model_cfg["audio_cfg"],
+        #     class_index_dict=copy.deepcopy(args.class_index_dict),
+        #     data_filling=args.data_filling,
+        #     data_truncating=args.data_truncating,
+        #     text_augment_selection=args.text_augment_selection,
+        # )
+
+        sample = {}
+        sample_response = {}
+        audio_data, sr =torchaudio.load(self.images[idx], frame_offset =  self.frame_offset[idx]*16000, num_frames = 160000)
+        audio_data_response, sr =torchaudio.load(self.images_response[idx], frame_offset =  self.frame_offset[idx]*16000, num_frames = 160000)
+
+        audio_data = audio_data[0] # taking left channel only
+        audio_data_response = audio_data_response[0] # taking left channel only
+
+        new_sr = 48000
+        resample_transform = torchaudio.transforms.Resample(16000, new_sr)
+        audio_data = resample_transform(audio_data)
+        audio_data_response = resample_transform(audio_data_response)
+
+        sample = get_audio_features(
+            sample, audio_data, max_len = new_sr*10, data_truncating = self.args.data_truncating, data_filling = self.args.data_filling, audio_cfg = self.transforms["audio_cfg"]
+        )
+
+        sample_response = get_audio_features(
+            sample_response, audio_data_response, max_len = new_sr*10, data_truncating = self.args.data_truncating, data_filling = self.args.data_filling, audio_cfg = self.transforms["audio_cfg"]
+        )
+        sample["response"] = sample_response["waveform"]
+
+        machine_codes = self.labels[idx]  #str(self.captions[idx])
+
+        if self.class_index_dict is not None:
+            # https://stackoverflow.com/questions/48004243/how-to-share-large-read-only-dictionary-list-across-processes-in-multiprocessing
+            # https://stackoverflow.com/questions/45693949/storing-strings-in-a-multiprocessing-sharedctypes-array
+            # key, val = class_index_dict
+            # key = key[:].split('\n')
+            # _dict = {k: v for k, v in zip(key, val)}
+            sample["class_label"] = np.zeros(len(self.class_index_dict.keys()))
+
+            for label_str in machine_codes:
+                try:    
+                    sample["class_label"][int(self.class_index_dict[label_str])] = 1
+                except:
+                    pass                
+
+            sample["class_label"] = torch.tensor(sample["class_label"]).float()
+
+        if len(machine_codes)>0:
+            sample["machine_codes"] = machine_codes[0] ### only show 1 lable if there are more
+        else:
+            if machine_codes == []:
+                sample["machine_codes"] = ""
+            else:
+                sample["machine_codes"] = machine_codes
+
+        sample['__url__'] = self.url[idx]
+
+        text = str(self.captions[idx])
+            
+        text_augment_selection=self.args.text_augment_selection
+
+        # For selecting augmented text from dataset
+        if text_augment_selection is None or text_augment_selection == "none":
+            texts = text
+        else:
+            raise NotImplementedError(
+                f"text_augment_selection {text_augment_selection} not implemented"
+            )
+        sample["full_text"] = texts
+    
+        if isinstance(texts, list) and isinstance(texts[0], str) and len(texts) > 1:
+            texts = random.choice(texts)
+        sample["raw_text"] = texts
+        sample["text"] = tokenizer(texts)  # text shape: [num_token]
+
+        sample["audio_name"] = self.images[idx].split("/")[-1]
+        # sample["text_name"] = sample["__key__"].split("/")[-1] + "." + text_ext
+        sample["audio_orig_sr"] = sr
+        return sample
+
+
 @dataclass
 class DataInfo:
     dataloader: DataLoader
@@ -1266,6 +1446,35 @@ def get_DS_10283_2325(args, preprocess_fn, is_train):
 
     return DataInfo(dataloader, sampler)
 
+def get_Audiostock_splited(args, preprocess_fn, is_train):
+    input_filename = args.train_data if is_train else args.val_data
+    assert input_filename
+
+    dataset = Audiostock_splited_dataset(
+        input_filename,
+        preprocess_fn,
+        args=args
+    )    
+    num_samples = len(dataset)
+    sampler = DistributedSampler(dataset) if args.distributed and is_train else None
+    shuffle = is_train and sampler is None
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=shuffle,
+        num_workers=args.workers,
+        pin_memory=True,
+        sampler=sampler,
+        drop_last=is_train,
+    )
+    dataloader.num_samples = num_samples
+    dataloader.num_batches = len(dataloader)
+
+    return DataInfo(dataloader, sampler)
+
+
+
 def get_dataset_fn(dataset_type):
     if dataset_type == "webdataset":
         return get_wds_dataset
@@ -1275,6 +1484,8 @@ def get_dataset_fn(dataset_type):
         return get_Audiostock_10k_16khz_dataset
     elif dataset_type == 'DS_10283_2325':
         return get_DS_10283_2325
+    elif dataset_type == 'Audiostock_splited':
+        return get_Audiostock_splited
     else:
         raise ValueError(f"Unsupported dataset type: {dataset_type}")
 
@@ -1330,6 +1541,21 @@ def get_data(args, model_cfg):
         args.val_dataset_names = [pair[1] for pair in files if pair[2] == 'valid']
 
     if args.dataset_type == "DS_10283_2325":
+        assert len(args.datasetnames) == len(args.datasetinfos), "datasetnames datasetinfos must have equal sizes."
+        files = []
+        # dataset_names = []
+        for root, _, file_names in os.walk(args.datasetpath):
+            for file_name, dataset_info in zip(args.datasetnames, args.datasetinfos):
+                file_path = os.path.join(root, file_name + ".json")
+                if os.path.exists(file_path):
+                    files.append((file_path, os.path.basename(os.path.dirname(file_path)), dataset_info))
+
+        
+        args.train_data = [pair[0] for pair in files if pair[2] == 'train']
+        args.val_data = [pair[0] for pair in files if pair[2] == 'valid']
+        args.val_dataset_names = [pair[1] for pair in files if pair[2] == 'valid']
+
+    if args.dataset_type == "Audiostock_splited":
         assert len(args.datasetnames) == len(args.datasetinfos), "datasetnames datasetinfos must have equal sizes."
         files = []
         # dataset_names = []

@@ -122,7 +122,7 @@ def main(config):
     ]
     save_top_k = config["trainer"]["save_top_k"]
 
-    if validation_every_n_steps > len(data.train_dataset):
+    if validation_every_n_steps is not None and validation_every_n_steps > len(data.train_dataset):
         validation_every_n_epochs = int(validation_every_n_steps / len(data.train_dataset))
         validation_every_n_steps = None
     else:
@@ -189,10 +189,10 @@ def main(config):
         accelerator=accelerator,
         devices=devices,
         num_sanity_val_steps=0,
-        resume_from_checkpoint=resume_from_checkpoint,
+        # resume_from_checkpoint=resume_from_checkpoint,
         logger=wandb_logger,
-        limit_val_batches=limit_train_batches,
-        limit_train_batches = limit_val_batches,
+        limit_val_batches=limit_val_batches ,
+        limit_train_batches = limit_train_batches,
         val_check_interval=validation_every_n_steps,
         check_val_every_n_epoch=validation_every_n_epochs,
         strategy=DDPStrategy(find_unused_parameters=False)
@@ -202,13 +202,13 @@ def main(config):
     )
     if config['mode'] in ["test", "validate"]:
         # Evaluation / Validation
-        trainer.validate(latent_diffusion, data)
+        trainer.validate(latent_diffusion, data, ckpt_path=resume_from_checkpoint)
     if config['mode'] == "validate_and_train":
         # Training
-        trainer.validate(latent_diffusion, data)
-        trainer.fit(latent_diffusion, data)
+        trainer.validate(latent_diffusion, data, ckpt_path=resume_from_checkpoint)
+        trainer.fit(latent_diffusion, data, ckpt_path=resume_from_checkpoint)
     elif config['mode'] == "train":
-        trainer.fit(latent_diffusion, data)
+        trainer.fit(latent_diffusion, data, ckpt_path=resume_from_checkpoint)
 
 
 if __name__ == "__main__":

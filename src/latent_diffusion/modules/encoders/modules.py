@@ -273,7 +273,7 @@ class ResponseCLAPAudioEmbeddingClassifierFreev2(nn.Module):
         with torch.no_grad():
             self.embed_mode = "audio"
             audio_emb = self(waveform.cuda())
-            self.embed_mode = "response"
+            self.embed_mode = "prompt"
             text_emb = self(text)
             similarity = F.cosine_similarity(audio_emb, text_emb, dim=2)
         self.embed_mode = orig_emb
@@ -330,7 +330,7 @@ class ResponseCLAPAudioEmbeddingClassifierFreev2(nn.Module):
                     audio_dict_list.append(audio_dict)
                 # [bs, 512]
                 embed = self.model.get_audio_embedding(audio_dict_list)
-        elif self.embed_mode == "response":
+        elif self.embed_mode == "prompt":
             # with torch.no_grad():
             #     # the 'fusion' truncate mode can be changed to 'rand_trunc' if run in unfusion mode
             #     text_data = self.tokenizer(batch)
@@ -351,7 +351,7 @@ class ResponseCLAPAudioEmbeddingClassifierFreev2(nn.Module):
                     audio_dict = get_audio_features(
                         audio_dict,
                         waveform,
-                        48000,  # This should likely be the sample rate, not a fixed number like 480000
+                        480000,
                         data_truncating="rand_trunc",
                         data_filling="repeatpad",
                         audio_cfg=self.model_cfg["audio_cfg"],
