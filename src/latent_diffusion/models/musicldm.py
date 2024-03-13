@@ -771,9 +771,11 @@ class MusicLDM(DDPM):
         scale_by_std=False,
         base_learning_rate=None,
         latent_mixup=0.,
+        prompt_noise_steps=None,
         *args,
         **kwargs,
     ):
+        self.prompt_noise_steps = prompt_noise_steps
         self.learning_rate = base_learning_rate
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
         self.scale_by_std = scale_by_std
@@ -2159,7 +2161,7 @@ class MusicLDM(DDPM):
                     if c is not None:
                         c = torch.cat([c] * n_gen, dim=0)
                     text = torch.cat([text] * n_gen, dim=0)
-                elif self.cond_stage_model.embed_mode == "waveform":
+                elif self.cond_stage_model.embed_mode in ["waveform", "audio"]:
                     text = super().get_input(batch, "waveform")
                     # Generate multiple samples
                     batch_size = z.shape[0] * n_gen
@@ -2173,6 +2175,20 @@ class MusicLDM(DDPM):
                     )
 
                 fnames = list(super().get_input(batch, "fname"))
+
+                if self.prompt_noise_steps is not None:   # not sure if this need to stay here at all
+
+                    fbank_prompt = super().get_input(batch, "fbank_prompt")
+
+                    prompt_encoder_posterior = self.encode_first_stage(fbank_prompt.unsqueeze(1))
+                    prompt_z = self.get_first_stage_encoding(prompt_encoder_posterior).detach()
+                    prompt_z = torch.cat([prompt_z] * n_gen, dim=0)
+
+                    t = torch.full((batch_size,),self.prompt_noise_steps, device=self.device).long()
+                    x_T = self.q_sample(x_start=prompt_z, t=t, noise=None)
+
+                else:
+                    pass
 
                 samples, _ = self.sample_log(
                     cond=c,

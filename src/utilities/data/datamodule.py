@@ -2,7 +2,7 @@ import os
 import pytorch_lightning as pl
 from omegaconf import OmegaConf
 from src.latent_diffusion.util import instantiate_from_config
-from utilities.data.dataset import AudiostockDataset, DS_10283_2325_Dataset, Audiostock_splited_Dataset
+from utilities.data.dataset import AudiostockDataset, DS_10283_2325_Dataset, Audiostock_splited_Dataset, Slakh_Dataset
 import torch
 import omegaconf
 
@@ -57,13 +57,15 @@ class DataModuleFromConfig(pl.LightningDataModule):
             return DS_10283_2325_Dataset
         if self.path["dataset_type"] == "Audiostock_splited":
             return Audiostock_splited_Dataset
-        
+        if self.path["dataset_type"] == "Slakh":
+            return Slakh_Dataset
+
         # Add other types of data here!
         else:
             raise ValueError(f"Unsupported data format: {self.data_format}")
 
     # def get_data_handler(self, path):
-    #     keywords = ['Audiostock', 'DS_10283_2325', "audiostock_splited"]  # Keywords to identify data handlers
+    #     keywords = ['Audiostock', 'DS_10283_2325', "audiostock_splited", "slakh"]  # Keywords to identify data handlers
     #     handler = None
     #     if type(path) is list or type(path) is omegaconf.listconfig.ListConfig:
             
@@ -88,6 +90,8 @@ class DataModuleFromConfig(pl.LightningDataModule):
     #                 handler = DS_10283_2325_Dataset
     #             elif keyword == "audiostock_splited":
     #                 handler = Audiostock_splited_Dataset
+    #             elif keyword == "slakh":
+    #                 handler = Slakh_Dataset
 
     #             print(f"Data format '{keyword}' detected. Using {handler.__name__} as the data handler for: {path} ")
     #     if handler is None:

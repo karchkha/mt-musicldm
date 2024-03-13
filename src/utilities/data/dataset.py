@@ -20,6 +20,7 @@ import os
 import torchvision
 import yaml
 import pandas as pd
+import omegaconf
 
 def make_index_dict(label_csv):
     index_lookup = {}
@@ -63,8 +64,19 @@ class AudiostockDataset(Dataset):
         self.train = train
         self.config = config
 
-        self.read_datafile(dataset_path, label_path, train)
+        # self.read_datafile(dataset_path, label_path, train)
 
+        self.data = []
+        if type(dataset_path) is str:
+            self.data = self.read_datafile(dataset_path, label_path, train) 
+
+        elif type(dataset_path) is list or type(dataset_path) is omegaconf.listconfig.ListConfig:
+            for datapath in dataset_path:
+                self.data +=  self.read_datafile(datapath, label_path, train) 
+   
+        else:
+            raise Exception("Invalid data format")
+        print("Data size: {}".format(len(self.data)))
 
         self.total_len = int(len(self.data) * factor)
 
@@ -118,8 +130,8 @@ class AudiostockDataset(Dataset):
         print(f'| Audiostock Dataset Length:{len(self.data)} | Epoch Length: {self.total_len}')
 
     def read_datafile(self, dataset_path, label_path, train):
-        self.data = [os.path.join(dataset_path, f) for f in os.listdir(dataset_path)]
-        if (not train) and len(self.data) > 2000:
+        data = [os.path.join(dataset_path, f) for f in os.listdir(dataset_path)]
+        if (not train) and len(data) > 2000:
             data_dict = {}
             filelist = [os.path.basename(f).split('.')[0].split('_') for f in self.data]
             for f,idx in filelist:
@@ -127,17 +139,19 @@ class AudiostockDataset(Dataset):
                     data_dict[f] = int(idx)
                 else:
                     data_dict[f] = max(int(idx), data_dict[f])
-            self.data = [os.path.join(dataset_path, f'{k}_{data_dict[k] // 2}.wav') for k in data_dict.keys()] + \
+            data = [os.path.join(dataset_path, f'{k}_{data_dict[k] // 2}.wav') for k in data_dict.keys()] + \
                 [os.path.join(dataset_path, f'{k}_0.wav') for k in data_dict.keys()] + \
                 [os.path.join(dataset_path, f'{k}_{data_dict[k]}.wav') for k in data_dict.keys()]
 
         
         self.label = []
         if label_path is not None:
-            for d in self.data:
+            for d in data:
                 lp = os.path.join(label_path, os.path.basename(d).split('.')[0] + '.json')
                 assert os.path.exists(lp), f'the label file {lp} does not exists.'
-                self.label.append(lp)    
+                self.label.append(lp)   
+
+        return data 
                 
     def random_segment_wav(self, x):
         wav_len = x.shape[-1]
@@ -332,8 +346,9 @@ class DS_10283_2325_Dataset(AudiostockDataset):
             entry['wav'] = prompt_file_path
             entry["response"] = response_file_path
 
-        self.data = data
+        # self.data = data
         self.label = data
+        return data
 
     def read_wav(self, filename, frame_offset):
 
@@ -473,11 +488,8 @@ class Audiostock_splited_Dataset(DS_10283_2325_Dataset):
         # add new entries
         data.extend(new_data)
 
-        self.data = data
-        # self.label = data
+        return data
 
-
-        print()
 
     def read_wav(self, filename, frame_offset):
 
@@ -511,6 +523,120 @@ class Audiostock_splited_Dataset(DS_10283_2325_Dataset):
         data_dict['fbank_prompt'] = fbank_prompt
         data_dict['prompt'] = prompt
         data_dict['text'] = text
+
+        data_dict['fbank'] = fbank_response
+        data_dict['waveform'] = response
+
+        return data_dict
+
+
+class Slakh_Dataset(DS_10283_2325_Dataset):
+    def __init__(self, dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False) -> None:
+        super().__init__(dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False)  
+
+    def read_datafile(self, dataset_path, label_path, train):
+
+        data = []
+
+        # Iterate over entries in the dataset
+        for entry in os.listdir(dataset_path):
+            entry_path = os.path.join(dataset_path, entry)
+            
+            # Check if metadata.yaml file exists
+            lp = os.path.join(entry_path, 'metadata_updated.yaml')
+            if os.path.exists(lp):
+                pass
+            else:
+                continue
+
+            # Read and load the YAML file
+            with open(lp, "r") as fp:
+                label_yaml = yaml.safe_load(fp)
+            
+            # Append the loaded data to the list
+            data.append(label_yaml)
+        
+        filtered_data = []
+
+        prompt = self.config["path"]["prompt"]
+        response = self.config["path"]["response"]
+
+        # Create pairs of prompts and responses
+        for entry in data:
+
+            prompts = []
+            responses = []
+
+            wav_directory = os.path.join(dataset_path, entry['audio_dir'])
+
+            # Collect all prompts and responses
+            for name, stem in entry['stems'].items():
+                file_path = os.path.join(wav_directory, name + ".flac")
+                
+                if os.path.exists(file_path):
+                    if stem['inst_class'] == prompt:
+                        prompts.append({'path': file_path, 'duration': stem["duration"], "active_segments": stem["active_segments"]})
+
+                    elif stem['inst_class'] == response:
+                        responses.append({'path': file_path, 'duration': stem["duration"], "active_segments": stem["active_segments"]})
+                else:
+                    continue
+               
+            # Pair each prompt with each response
+            for prompt_entry in prompts:
+                for response_entry in responses:
+                    
+                    # Compare active segments
+                    prompt_segments = set(prompt_entry['active_segments'])
+                    response_segments = set(response_entry['active_segments'])
+                    shared_segments = sorted(prompt_segments.intersection(response_segments))
+                    
+                    # Create a new entry for each shared segment
+                    if shared_segments:
+                        for segment in shared_segments:
+                            new_entry = entry.copy()
+                            
+                            new_entry['prompt'] = prompt_entry['path']
+                            new_entry['response'] = response_entry['path']
+                            new_entry['frame_offset'] = segment
+                            filtered_data.append(new_entry)
+                    else:
+                        pass
+                        # print("No shared active segments. Skipping entry.")
+
+        return filtered_data
+
+
+    def read_wav(self, filename, frame_offset):
+
+        y, sr =torchaudio.load(filename, frame_offset =  frame_offset*44100, num_frames = 441000)
+
+        # resample
+        if sr != self.sampling_rate:
+            y = torchaudio.functional.resample(y, sr, self.sampling_rate)
+
+        # normalize
+        y = self.normalize_wav(y)
+        # segment
+        y = self.random_segment_wav(y)
+        # pad
+        if not self.whole_track:
+            y = torch.nn.functional.pad(y, (0, self.segment_length - y.size(1)), 'constant', 0.)
+        return y
+
+    def __getitem__(self, index):
+        idx = index % len(self.data)
+        data_dict = {}
+        f = self.data[idx]
+        
+        prompt, fbank_prompt = self.get_mel(f["prompt"], None, int(f["frame_offset"]))
+        response, fbank_response = self.get_mel(f["response"], None, int(f["frame_offset"]))
+
+        # construct dict
+        data_dict['fname'] = f['audio_dir'].split('/')[0]+"_from_"+str(f["frame_offset"])
+        data_dict['fbank_prompt'] = fbank_prompt
+        data_dict['prompt'] = prompt
+        # data_dict['text'] = text
 
         data_dict['fbank'] = fbank_response
         data_dict['waveform'] = response

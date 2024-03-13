@@ -69,7 +69,7 @@ def parse_args():
     )
     parser.add_argument(
         "--dataset-type",
-        choices=["webdataset", "csv", "auto", "toy", "Audiostock-10k-16khz", "DS_10283_2325", "Audiostock_splited"],
+        choices=["webdataset", "csv", "auto", "toy", "Audiostock-10k-16khz", "DS_10283_2325", "Audiostock_splited", "Slakh"],
         default="auto",
         help="Which type of dataset to process.",
     )

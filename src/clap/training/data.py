@@ -23,6 +23,7 @@ import wget
 import tempfile
 import copy
 from contextlib import suppress
+import yaml
 
 from clap_module.utils import get_tar_path_from_dataset_name, dataset_split
 from clap_module.utils import load_p, load_class_label
@@ -805,6 +806,193 @@ class Audiostock_splited_dataset(DS_10283_2325_dataset):
         return sample
 
 
+class Slakh_dataset(DS_10283_2325_dataset):
+    def __init__(self, input_filename, transforms, args = None) -> None:
+        super().__init__(input_filename, transforms, args = args)
+
+    def read_datafile(self, dataset_path):
+
+        data = []
+
+        # Iterate over entries in the dataset
+        for entry in os.listdir(dataset_path):
+            entry_path = os.path.join(dataset_path, entry)
+            
+            # Check if metadata.yaml file exists
+            lp = os.path.join(entry_path, 'metadata_updated.yaml')
+            if os.path.exists(lp):
+                pass
+            else:
+                continue
+
+            # Read and load the YAML file
+            with open(lp, "r") as fp:
+                label_yaml = yaml.safe_load(fp)
+            
+            # Append the loaded data to the list
+            data.append(label_yaml)
+        
+        filtered_data = []
+
+        prompt = self.args.prompt
+        response = self.args.response
+
+        # Create pairs of prompts and responses
+        for entry in data:
+
+            prompts = []
+            responses = []
+
+            wav_directory = os.path.join(dataset_path, entry['audio_dir'])
+
+            # Collect all prompts and responses
+            for name, stem in entry['stems'].items():
+                file_path = os.path.join(wav_directory, name + ".flac")
+                
+                if os.path.exists(file_path):
+                    if stem['inst_class'] == prompt:
+                        prompts.append({'path': file_path, 'duration': stem["duration"], "active_segments": stem["active_segments"]})
+
+                    elif stem['inst_class'] == response:
+                        responses.append({'path': file_path, 'duration': stem["duration"], "active_segments": stem["active_segments"]})
+                else:
+                    continue
+               
+            # Pair each prompt with each response
+            for prompt_entry in prompts:
+                for response_entry in responses:
+                    
+                    # Compare active segments
+                    prompt_segments = set(prompt_entry['active_segments'])
+                    response_segments = set(response_entry['active_segments'])
+                    shared_segments = sorted(prompt_segments.intersection(response_segments))
+                    
+                    # Create a new entry for each shared segment
+                    if shared_segments:
+                        for segment in shared_segments:
+                            new_entry = entry.copy()
+                            
+                            new_entry['wav'] = prompt_entry['path']
+                            new_entry['response'] = response_entry['path']
+                            new_entry['frame_offset'] = segment
+
+
+                            new_entry["caption"] = entry.get("audio_dir", 'not available').split("/")[0]
+                            # get data category if given
+
+                            labels = entry.get('tag',  'not available')
+                            if labels == 'not available':
+                                new_entry['labels'] = []
+                            elif isinstance(labels, list):
+                                new_entry['labels'] = labels
+                            else:
+                                try:
+                                    label_list = eval(labels)
+                                    if isinstance(label_list, list):
+                                        new_entry['labels'] = label_list
+                                    else:
+                                        new_entry['labels'] = []
+                                except (NameError, SyntaxError):
+                                    new_entry['labels'] = []
+
+
+
+                            filtered_data.append(new_entry)
+                    else:
+                        pass
+                        # print("No shared active segments. Skipping entry.")
+
+        return filtered_data
+
+    def __getitem__(self, idx):
+
+        #             preprocess,
+        #     audio_ext=audio_ext,
+        #     text_ext=text_ext,
+        #     max_len=max_len,
+        #     audio_cfg=model_cfg["audio_cfg"],
+        #     class_index_dict=copy.deepcopy(args.class_index_dict),
+        #     data_filling=args.data_filling,
+        #     data_truncating=args.data_truncating,
+        #     text_augment_selection=args.text_augment_selection,
+        # )
+
+        sample = {}
+        sample_response = {}
+        audio_data, sr =torchaudio.load(self.images[idx], frame_offset =  int(self.frame_offset[idx])*44100, num_frames = 441000)
+        audio_data_response, sr =torchaudio.load(self.images_response[idx], frame_offset =  int(self.frame_offset[idx])*44100, num_frames = 441000)
+
+        audio_data = audio_data[0] # taking left channel only
+        audio_data_response = audio_data_response[0] # taking left channel only
+
+        new_sr = 48000
+        resample_transform = torchaudio.transforms.Resample(44100, new_sr)
+        audio_data = resample_transform(audio_data)
+        audio_data_response = resample_transform(audio_data_response)
+
+        sample = get_audio_features(
+            sample, audio_data, max_len = new_sr*10, data_truncating = self.args.data_truncating, data_filling = self.args.data_filling, audio_cfg = self.transforms["audio_cfg"]
+        )
+
+        sample_response = get_audio_features(
+            sample_response, audio_data_response, max_len = new_sr*10, data_truncating = self.args.data_truncating, data_filling = self.args.data_filling, audio_cfg = self.transforms["audio_cfg"]
+        )
+        sample["response"] = sample_response["waveform"]
+
+        machine_codes = self.labels[idx]  #str(self.captions[idx])
+
+        if self.class_index_dict is not None:
+            # https://stackoverflow.com/questions/48004243/how-to-share-large-read-only-dictionary-list-across-processes-in-multiprocessing
+            # https://stackoverflow.com/questions/45693949/storing-strings-in-a-multiprocessing-sharedctypes-array
+            # key, val = class_index_dict
+            # key = key[:].split('\n')
+            # _dict = {k: v for k, v in zip(key, val)}
+            sample["class_label"] = np.zeros(len(self.class_index_dict.keys()))
+
+            for label_str in machine_codes:
+                try:    
+                    sample["class_label"][int(self.class_index_dict[label_str])] = 1
+                except:
+                    pass                
+
+            sample["class_label"] = torch.tensor(sample["class_label"]).float()
+
+        if len(machine_codes)>0:
+            sample["machine_codes"] = machine_codes[0] ### only show 1 lable if there are more
+        else:
+            if machine_codes == []:
+                sample["machine_codes"] = ""
+            else:
+                sample["machine_codes"] = machine_codes
+
+        sample['__url__'] = self.url[idx]
+
+        text = str(self.captions[idx])
+            
+        text_augment_selection=self.args.text_augment_selection
+
+        # For selecting augmented text from dataset
+        if text_augment_selection is None or text_augment_selection == "none":
+            texts = text
+        else:
+            raise NotImplementedError(
+                f"text_augment_selection {text_augment_selection} not implemented"
+            )
+        sample["full_text"] = texts
+    
+        if isinstance(texts, list) and isinstance(texts[0], str) and len(texts) > 1:
+            texts = random.choice(texts)
+        sample["raw_text"] = texts
+        sample["text"] = tokenizer(texts)  # text shape: [num_token]
+
+        sample["audio_name"] = self.images[idx].split("/")[-1]
+        # sample["text_name"] = sample["__key__"].split("/")[-1] + "." + text_ext
+        sample["audio_orig_sr"] = sr
+        return sample
+
+
+
+
 @dataclass
 class DataInfo:
     dataloader: DataLoader
@@ -1474,6 +1662,33 @@ def get_Audiostock_splited(args, preprocess_fn, is_train):
     return DataInfo(dataloader, sampler)
 
 
+def get_Slakh(args, preprocess_fn, is_train):
+    input_filename = args.train_data if is_train else args.val_data
+    assert input_filename
+
+    dataset = Slakh_dataset(
+        input_filename,
+        preprocess_fn,
+        args=args
+    )    
+    num_samples = len(dataset)
+    sampler = DistributedSampler(dataset) if args.distributed and is_train else None
+    shuffle = is_train and sampler is None
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=shuffle,
+        num_workers=args.workers,
+        pin_memory=True,
+        sampler=sampler,
+        drop_last=is_train,
+    )
+    dataloader.num_samples = num_samples
+    dataloader.num_batches = len(dataloader)
+
+    return DataInfo(dataloader, sampler)
+
 
 def get_dataset_fn(dataset_type):
     if dataset_type == "webdataset":
@@ -1486,6 +1701,8 @@ def get_dataset_fn(dataset_type):
         return get_DS_10283_2325
     elif dataset_type == 'Audiostock_splited':
         return get_Audiostock_splited
+    elif dataset_type == 'Slakh':
+        return get_Slakh
     else:
         raise ValueError(f"Unsupported dataset type: {dataset_type}")
 
@@ -1564,6 +1781,21 @@ def get_data(args, model_cfg):
                 file_path = os.path.join(root, file_name + ".json")
                 if os.path.exists(file_path):
                     files.append((file_path, os.path.basename(os.path.dirname(file_path)), dataset_info))
+
+        
+        args.train_data = [pair[0] for pair in files if pair[2] == 'train']
+        args.val_data = [pair[0] for pair in files if pair[2] == 'valid']
+        args.val_dataset_names = [pair[1] for pair in files if pair[2] == 'valid']
+
+    if args.dataset_type == "Slakh":
+        assert len(args.datasetnames) == len(args.datasetinfos), "datasetnames datasetinfos must have equal sizes."
+        files = []
+        # dataset_names = []
+
+        for file_name, dataset_info in zip(args.datasetnames, args.datasetinfos):
+            file_path =  file_name
+            if os.path.exists(file_path):
+                files.append((file_path, os.path.basename(os.path.dirname(file_path)), dataset_info))
 
         
         args.train_data = [pair[0] for pair in files if pair[2] == 'train']
