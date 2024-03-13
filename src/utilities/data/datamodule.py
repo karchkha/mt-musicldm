@@ -90,8 +90,6 @@ class DataModuleFromConfig(pl.LightningDataModule):
     #                 handler = DS_10283_2325_Dataset
     #             elif keyword == "audiostock_splited":
     #                 handler = Audiostock_splited_Dataset
-    #             elif keyword == "slakh":
-    #                 handler = Slakh_Dataset
 
     #             print(f"Data format '{keyword}' detected. Using {handler.__name__} as the data handler for: {path} ")
     #     if handler is None:
