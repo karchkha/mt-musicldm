@@ -644,6 +644,159 @@ class Slakh_Dataset(DS_10283_2325_Dataset):
         return data_dict
 
 
+class MultiSource_Slakh_Dataset(DS_10283_2325_Dataset):
+    def __init__(self, dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False) -> None:
+        super().__init__(dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False)  
+
+    def get_duration_sec(self, file, cache=False):
+
+        if not os.path.exists(file):
+            # File doesn't exist, return 0
+            return 0
+        try:
+            # Attempt to read cached duration from a file
+            with open(file + ".dur", "r") as f:
+                duration = float(f.readline().strip("\n"))
+        except FileNotFoundError:
+            # If cached duration is not found, use torchaudio to find the actual duration
+            audio_info = torchaudio.info(file)
+            duration = audio_info.num_frames / audio_info.sample_rate
+            if cache:
+                # Cache the duration for future use
+                with open(file + ".dur", "w") as f:
+                    f.write(str(duration) + "\n")
+        return duration
+    
+    def filter(self, tracks, audio_files_dir):
+        # Remove files too short or too long
+        keep = []
+        durations = []
+        for track in tracks:
+            track_dir = os.path.join(audio_files_dir, track)
+            # files = librosa.util.find_files(f"{track_dir}", ext=["mp3", "opus", "m4a", "aac", "wav"])
+            # Manually create the list of file paths based on stems defined in the configuration
+            files = [os.path.join(track_dir, stem + ".wav") for stem in self.config["path"]["stems"]]
+            
+            
+            # skip if there are no sources per track
+            if not files:
+                continue
+            
+            durations_track = np.array([self.get_duration_sec(file, cache=True) * self.config['preprocessing']['audio']['sampling_rate'] for file in files]) # Could be approximate
+            
+            # skip if there is a source that is shorter than minimum track length
+            if (durations_track / self.config['preprocessing']['audio']['sampling_rate'] < 10).any():
+                continue
+            
+            # skip if there is a source that is longer than maximum track length
+            if (durations_track / self.config['preprocessing']['audio']['sampling_rate'] >= 600).any():
+                print("skiping_file:", track)
+                continue
+            
+            # skip if in the track the different sources have different lengths
+            if not (durations_track == durations_track[0]).all():
+                print(f"{track} skipped because sources are not aligned!")
+                print(durations_track)
+                continue
+            keep.append(track)
+            durations.append(durations_track[0])
+        
+        print(f"sr={self.config['preprocessing']['audio']['sampling_rate']}, min: {10}, max: {600}")
+        print(f"Keeping {len(keep)} of {len(tracks)} tracks")
+
+        return keep, durations, np.cumsum(np.array(durations))
+
+    def read_datafile(self, dataset_path, label_path, train):
+        data = []
+        # Load list of tracks and starts/durations
+        tracks = os.listdir(dataset_path)
+        print(f"Found {len(tracks)} tracks.")
+        keep, durations, cumsum = self.filter(tracks, dataset_path)
+
+        # Assuming keep, durations, and cumsum are lists of the same length
+        for idx in range(len(keep)):
+            # Construct a dictionary for each track with its name, duration, and cumulative sum
+            track_info = {
+                'wav_path': os.path.join(dataset_path,keep[idx]),
+                'duration': durations[idx],
+                # 'cumsum': cumsum[idx]
+            }
+            # Append the dictionary to the data list
+            data.append(track_info)
+
+        return data
+
+
+    def read_wav(self, filename, frame_offset):
+
+        y, sr =torchaudio.load(filename, frame_offset =  int (frame_offset*22050), num_frames = int(22050*10.24)) # taking a little longer sample than 10 sec 
+
+        # resample
+        if sr != self.sampling_rate:
+            y = torchaudio.functional.resample(y, sr, self.sampling_rate)
+
+        # normalize
+        # y = self.normalize_wav(y) ##### don't do this because mix matters!!!!
+        # segment
+        # y = self.random_segment_wav(y)
+            
+        # pad
+        if not self.whole_track:
+            y = torch.nn.functional.pad(y, (0, self.segment_length - y.size(1)), 'constant', 0.)
+        return y
+
+    def get_index_offset(self, item):
+
+        # For a given dataset item and shift, return song index and offset within song
+        half_interval = self.segment_length // 2
+
+        
+        start, end = 0.0, self.data[item]["duration"]  # start and end of current song
+        
+        offset = np.random.randint(start, end)  # random shif
+
+        if offset > end - self.segment_length:  # Going over song
+            offset = max(start, offset - half_interval)  # Now should fit
+        # assert (
+        #         start <= offset <= end - self.segment_length
+        # ), f"Offset {offset} not in [{start}, {end - self.segment_length}]. End: {end}, SL: {self.segment_length}, Index: {item}"
+        
+        offset = offset/self.config['preprocessing']['audio']['sampling_rate']
+        return item, offset
+
+    def __getitem__(self, index):
+        idx = index % len(self.data)
+        data_dict = {}
+        f = self.data[idx]
+
+        index, frame_offset = self.get_index_offset(idx)
+        # wav = self.get_song_chunk(index, offset)
+        # return self.transform(torch.from_numpy(wav))
+
+        audio_list = []
+        fbank_list = []
+        for stem in self.config["path"]["stems"]:
+
+            audio, fbank = self.get_mel(os.path.join(f["wav_path"],stem+".wav"), None, frame_offset)
+            audio_list.append(audio[np.newaxis, :])  # Expand dims for audio
+            fbank_list.append(fbank[np.newaxis, :])  # Expand dims for fbank
+
+        
+        # construct dict
+        data_dict['fname'] = f['wav_path'].split('/')[-1]+"_from_"+str(int(frame_offset))
+        data_dict['fbank'] = np.concatenate(fbank_list, axis=0)
+        data_dict['waveform'] = np.concatenate(audio_list, axis=0)
+        # data_dict['text'] = text
+
+        # Mix audio and fbank features by summing; ensure same length and proper alignment
+        # :TODO careful with potential clipping
+        data_dict['mix'] = np.sum(data_dict['waveform'], axis=0)
+        data_dict['fbank_mix'] = np.sum(data_dict['fbank'], axis=0)
+
+
+        return data_dict
+
+
 class Dataset(Dataset):
     def __init__(
         self,

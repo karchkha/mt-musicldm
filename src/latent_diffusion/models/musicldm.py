@@ -639,8 +639,8 @@ class DDPM(pl.LightningModule):
     @torch.no_grad()
     def on_validation_epoch_end(self) -> None:
         if self.global_rank == 0:
-            if self.cond_stage_model.embed_mode == "prompt":
-                self.test_data_subset_path = os.path.join(self.get_log_dir(), "target_%s" % (self.global_step))
+            # if self.cond_stage_model.embed_mode == "prompt":
+            #     self.test_data_subset_path = os.path.join(self.get_log_dir(), "target_%s" % (self.global_step))
     
             if self.test_data_subset_path is not None:
                 from audioldm_eval import EvaluationHelper
@@ -2119,21 +2119,21 @@ class MusicLDM(DDPM):
         os.makedirs(waveform_save_path, exist_ok=True)
         # print("\nWaveform save path: ", waveform_save_path)
 
-        if self.cond_stage_model.embed_mode == "prompt":
-            waveform_orig_save_path = os.path.join(self.get_log_dir(), "orig_%s" % (self.global_step))
-            os.makedirs(waveform_orig_save_path, exist_ok=True)
-            # print("\nWaveform orig save path: ", waveform_orig_save_path)                  
+        # if self.cond_stage_model.embed_mode == "prompt":
+        #     waveform_orig_save_path = os.path.join(self.get_log_dir(), "orig_%s" % (self.global_step))
+        #     os.makedirs(waveform_orig_save_path, exist_ok=True)
+        #     # print("\nWaveform orig save path: ", waveform_orig_save_path)                  
 
-            wavefor_target_save_path = os.path.join(self.get_log_dir(), "target_%s" % (self.global_step))
-            os.makedirs(wavefor_target_save_path, exist_ok=True)
-            # print("\nWaveform target save path: ", wavefor_target_save_path)      
+        #     wavefor_target_save_path = os.path.join(self.get_log_dir(), "target_%s" % (self.global_step))
+        #     os.makedirs(wavefor_target_save_path, exist_ok=True)
+        #     # print("\nWaveform target save path: ", wavefor_target_save_path)      
 
-        if (
-            "audiocaps" in waveform_save_path
-            and len(os.listdir(waveform_save_path)) >= 964
-        ):
-            print("The evaluation has already been done at %s" % waveform_save_path)
-            return waveform_save_path
+        # if (
+        #     "audiocaps" in waveform_save_path
+        #     and len(os.listdir(waveform_save_path)) >= 964
+        # ):
+        #     print("The evaluation has already been done at %s" % waveform_save_path)
+        #     return waveform_save_path
 
         with self.ema_scope("Plotting"):
             for batch in batchs:
@@ -2145,50 +2145,55 @@ class MusicLDM(DDPM):
                     return_original_cond=False,
                     bs=None,
                 )
-                
-                if self.cond_stage_model.embed_mode == "text":
-                    text = super().get_input(batch, "text")
+
+                if self.cond_stage_model is not None:
 
                     # Generate multiple samples
                     batch_size = z.shape[0] * n_gen
-                    if c is not None:
-                        c = torch.cat([c] * n_gen, dim=0)
-                    text = text * n_gen
-                elif self.cond_stage_model.embed_mode == "prompt":
-                    text = super().get_input(batch, "prompt")
-                    # Generate multiple samples
-                    batch_size = z.shape[0] * n_gen
-                    if c is not None:
-                        c = torch.cat([c] * n_gen, dim=0)
-                    text = torch.cat([text] * n_gen, dim=0)
-                elif self.cond_stage_model.embed_mode in ["waveform", "audio"]:
-                    text = super().get_input(batch, "waveform")
-                    # Generate multiple samples
-                    batch_size = z.shape[0] * n_gen
-                    if c is not None:
-                        c = torch.cat([c] * n_gen, dim=0)
-                    text = torch.cat([text] * n_gen, dim=0)
 
-                if unconditional_guidance_scale != 1.0:
-                    unconditional_conditioning = (
-                        self.cond_stage_model.get_unconditional_condition(batch_size)
-                    )
+                    if self.cond_stage_model.embed_mode == "text":
+                        text = super().get_input(batch, "text")
+                       
+                        if c is not None:
+                            c = torch.cat([c] * n_gen, dim=0)
+                        text = text * n_gen
+                    # elif self.cond_stage_model.embed_mode == "prompt":
+                    #     text = super().get_input(batch, "prompt")
+                    #     # Generate multiple samples
+                    #     batch_size = z.shape[0] * n_gen
+                    #     if c is not None:
+                    #         c = torch.cat([c] * n_gen, dim=0)
+                    #     text = torch.cat([text] * n_gen, dim=0)
+                    elif self.cond_stage_model.embed_mode in ["waveform", "audio"]:
+                        text = super().get_input(batch, "waveform")
+
+                        if c is not None:
+                            c = torch.cat([c] * n_gen, dim=0)
+                        text = torch.cat([text] * n_gen, dim=0)
+
+                    if unconditional_guidance_scale != 1.0:
+                        unconditional_conditioning = (
+                            self.cond_stage_model.get_unconditional_condition(batch_size)
+                        )
+                else:
+                    batch_size = z.shape[0]
+                    text = None
 
                 fnames = list(super().get_input(batch, "fname"))
 
-                if self.prompt_noise_steps is not None:   # not sure if this need to stay here at all
+                # if self.prompt_noise_steps is not None:   # not sure if this need to stay here at all
 
-                    fbank_prompt = super().get_input(batch, "fbank_prompt")
+                #     fbank_prompt = super().get_input(batch, "fbank_prompt")
 
-                    prompt_encoder_posterior = self.encode_first_stage(fbank_prompt.unsqueeze(1))
-                    prompt_z = self.get_first_stage_encoding(prompt_encoder_posterior).detach()
-                    prompt_z = torch.cat([prompt_z] * n_gen, dim=0)
+                #     prompt_encoder_posterior = self.encode_first_stage(fbank_prompt.unsqueeze(1))
+                #     prompt_z = self.get_first_stage_encoding(prompt_encoder_posterior).detach()
+                #     prompt_z = torch.cat([prompt_z] * n_gen, dim=0)
 
-                    t = torch.full((batch_size,),self.prompt_noise_steps, device=self.device).long()
-                    x_T = self.q_sample(x_start=prompt_z, t=t, noise=None)
+                #     t = torch.full((batch_size,),self.prompt_noise_steps, device=self.device).long()
+                #     x_T = self.q_sample(x_start=prompt_z, t=t, noise=None)
 
-                else:
-                    pass
+                # else:
+                #     pass
 
                 samples, _ = self.sample_log(
                     cond=c,
@@ -2228,19 +2233,19 @@ class MusicLDM(DDPM):
                 
                 self.save_waveform(waveform, waveform_save_path, name=fnames)
 
-                if self.cond_stage_model.embed_mode == "prompt":
-                    orig_waveforms = text[best_index].unsqueeze(1).cpu().detach()
-                    self.save_waveform(orig_waveforms, waveform_orig_save_path, name=fnames)
+                # if self.cond_stage_model.embed_mode == "prompt":
+                #     orig_waveforms = text[best_index].unsqueeze(1).cpu().detach()
+                #     self.save_waveform(orig_waveforms, waveform_orig_save_path, name=fnames)
 
-                    target = super().get_input(batch, 'waveform')
-                    target_waveforms = target.unsqueeze(1).cpu().detach()
-                    self.save_waveform(target_waveforms, wavefor_target_save_path, name=fnames)
+                #     target = super().get_input(batch, 'waveform')
+                #     target_waveforms = target.unsqueeze(1).cpu().detach()
+                #     self.save_waveform(target_waveforms, wavefor_target_save_path, name=fnames)
 
                     
-                    if self.logger is not None:
-                        # create new list
-                        log_data_batch = mel[best_index], waveform, batch
-                        self.log_images_audios_response(log_data_batch)
+                if self.logger is not None:
+                    # create new list
+                    log_data_batch = mel[best_index], waveform, batch
+                    self.log_images_audios_response(log_data_batch)
 
         return waveform_save_path
 
@@ -2256,25 +2261,21 @@ class MusicLDM(DDPM):
         for i in range(mel.shape[0]):
             self.logger.log_image(
                 "Mel_specs %s" % name,
-                [np.flipud(self.tensor2numpy(batch["fbank_prompt"][i]).T), np.flipud(self.tensor2numpy(mel[i]).T), np.flipud(self.tensor2numpy(batch["fbank"][i]).T) ],
-                caption=["prompt_%s" %batch["fname"][i], "response_generated_%s" %batch["fname"][i], "reponse_target_%s" %batch["fname"][i]],
+                [np.flipud(self.tensor2numpy(batch["fbank"][i]).T), np.flipud(self.tensor2numpy(mel[i]).T) ],
+                caption=["orig_fbank_%s" %batch["fname"][i], "generated_%s" %batch["fname"][i],],
             )
 
             ### logginh audios ###
 
             self.logger.experiment.log(
                 {
-                    "prompt_%s"
+                    "orig_%s"
                     % name: wandb.Audio(
-                        self.tensor2numpy(batch["prompt"])[i], caption= batch["fname"][i], sample_rate=16000,
+                        self.tensor2numpy(batch["waveform"])[i], caption= batch["fname"][i], sample_rate=16000,
                     ),
-                    "response_generated_%s"
+                    "generated_%s"
                     % name: wandb.Audio(
                         waveform.squeeze(1)[i], caption= batch["fname"][i] , sample_rate=16000,
-                    ),
-                    "reponse_target_%s"
-                    % name: wandb.Audio(
-                        self.tensor2numpy(batch["waveform"])[i], caption= batch["fname"][i]  , sample_rate=16000,
                     ),
                 }
             )
