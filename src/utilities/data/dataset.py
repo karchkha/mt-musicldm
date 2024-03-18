@@ -314,6 +314,20 @@ class AudiostockDataset(Dataset):
         data_dict['fbank'] = fbank
         data_dict['waveform'] = waveform
         data_dict['text'] = text
+
+
+        ### adding this just to make it artificially compatible with multicanel
+        audio_list = []
+        fbank_list = []
+        for stem in self.config["path"]["stems"]:
+            audio_list.append(np.zeros_like(waveform)[np.newaxis, :])  # Expand dims for audio
+            fbank_list.append(np.zeros_like(fbank)[np.newaxis, :])  # Expand dims for fbank
+
+        
+        # construct dict
+        data_dict['fbank_stems'] = np.concatenate(fbank_list, axis=0)
+        data_dict['waveform_stems'] = np.concatenate(audio_list, axis=0)
+
         return data_dict
 
     def __len__(self):
@@ -784,14 +798,14 @@ class MultiSource_Slakh_Dataset(DS_10283_2325_Dataset):
         
         # construct dict
         data_dict['fname'] = f['wav_path'].split('/')[-1]+"_from_"+str(int(frame_offset))
-        data_dict['fbank'] = np.concatenate(fbank_list, axis=0)
-        data_dict['waveform'] = np.concatenate(audio_list, axis=0)
+        data_dict['fbank_stems'] = np.concatenate(fbank_list, axis=0)
+        data_dict['waveform_stems'] = np.concatenate(audio_list, axis=0)
         # data_dict['text'] = text
 
         # Mix audio and fbank features by summing; ensure same length and proper alignment
         # :TODO careful with potential clipping
-        data_dict['mix'] = np.sum(data_dict['waveform'], axis=0)
-        data_dict['fbank_mix'] = np.sum(data_dict['fbank'], axis=0)
+        data_dict['waveform'] = np.sum(data_dict['waveform_stems'], axis=0)
+        data_dict['fbank'] = np.sum(data_dict['fbank_stems'], axis=0)
 
 
         return data_dict

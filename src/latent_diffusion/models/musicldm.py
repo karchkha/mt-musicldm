@@ -25,6 +25,7 @@ from torchvision.utils import make_grid
 from pytorch_lightning.utilities.distributed import rank_zero_only
 from latent_diffusion.modules.encoders.modules import CLAPResidualVQ
 import wandb
+from pathlib import Path
 
 from latent_diffusion.util import (
     log_txt_as_img,
@@ -487,7 +488,7 @@ class DDPM(pl.LightningModule):
             return list(batch['text'])
         elif k == 'fname':
             return batch['fname']
-        elif k == 'fbank' or k == 'fbank_1' or k == 'fbank_2':
+        elif 'fbank' in k: # == 'fbank' or k == 'fbank_1' or k == 'fbank_2':
             return batch[k].unsqueeze(1).to(memory_format=torch.contiguous_format).float()
         else:
             return batch[k].to(memory_format=torch.contiguous_format).float()
@@ -639,14 +640,13 @@ class DDPM(pl.LightningModule):
     @torch.no_grad()
     def on_validation_epoch_end(self) -> None:
         if self.global_rank == 0:
-            # if self.cond_stage_model.embed_mode == "prompt":
-            #     self.test_data_subset_path = os.path.join(self.get_log_dir(), "target_%s" % (self.global_step))
+            self.test_data_subset_path = os.path.join(self.get_log_dir(), "target_%s" % (self.global_step))
     
             if self.test_data_subset_path is not None:
                 from audioldm_eval import EvaluationHelper
 
                 print(
-                    "Evaluate model output based on the Audiostock test set: %s"
+                    "Evaluate model output based on the data savee in: %s"
                     % self.test_data_subset_path
                 )
                 device = self.device #torch.device(f"cuda:{0}")
@@ -656,34 +656,58 @@ class DDPM(pl.LightningModule):
                     os.path.exists(waveform_save_path)
                     and len(os.listdir(waveform_save_path)) > 0
                 ):
-                    evaluator = EvaluationHelper(16000, device)
-                    metrics = evaluator.main(
-                        waveform_save_path,
-                        self.test_data_subset_path,
-                    )
+                    # evaluator = EvaluationHelper(16000, device)
+                    # metrics = evaluator.main(
+                    #     waveform_save_path,
+                    #     self.test_data_subset_path,
+                    # )
 
-                    self.metrics_buffer = {
-                        ("val/" + k): float(v) for k, v in metrics.items()
-                    }
+                    # self.metrics_buffer = {
+                    #     ("val/" + k): float(v) for k, v in metrics.items()
+                    # }
+                    dir1 = Path(waveform_save_path)
+                    dir2 = Path(self.test_data_subset_path)
+
+                    # Get set of folder names in each directory
+                    dir1_folders = {folder.name for folder in dir1.iterdir() if folder.is_dir()}
+                    dir2_folders = {folder.name for folder in dir2.iterdir() if folder.is_dir()}
+
+                    # Find the intersection of folder names existing in both directories
+                    matching_folders = dir1_folders & dir2_folders
+
+                    # Iterate through matching folders and perform operations
+                    for folder_name in matching_folders:
+                        folder1 = dir1 / folder_name
+                        folder2 = dir2 / folder_name
+
+                        print("\nNow evaliating:", folder_name)
+
+                        evaluator = EvaluationHelper(16000, device)
+                        metrics = evaluator.main(
+                            str(folder1),
+                            str(folder2),
+                        )
+                        self.metrics_buffer = {
+                            (f"val/{folder_name}/" + k): float(v) for k, v in metrics.items()
+                        }
+
+                        if len(self.metrics_buffer.keys()) > 0:
+                            for k in self.metrics_buffer.keys():
+                                self.log(
+                                    k,
+                                    self.metrics_buffer[k],
+                                    prog_bar=False,
+                                    logger=True,
+                                    on_step=False,
+                                    on_epoch=True,
+                                )
+                                print(k, self.metrics_buffer[k])
+                            self.metrics_buffer = {}
                 else:
                     print(
                         "The target folder for evaluation does not exist: %s"
                         % waveform_save_path
                     )
-
-
-                if len(self.metrics_buffer.keys()) > 0:
-                    for k in self.metrics_buffer.keys():
-                        self.log(
-                            k,
-                            self.metrics_buffer[k],
-                            prog_bar=False,
-                            logger=True,
-                            on_step=False,
-                            on_epoch=True,
-                        )
-                        print(k, self.metrics_buffer[k])
-                    self.metrics_buffer = {}
 
         self.cond_stage_key = self.cond_stage_key_orig
         if self.cond_stage_model is not None:
@@ -771,11 +795,11 @@ class MusicLDM(DDPM):
         scale_by_std=False,
         base_learning_rate=None,
         latent_mixup=0.,
-        prompt_noise_steps=None,
+        num_stems=None,
         *args,
         **kwargs,
     ):
-        self.prompt_noise_steps = prompt_noise_steps
+        self.num_stems = num_stems
         self.learning_rate = base_learning_rate
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
         self.scale_by_std = scale_by_std
@@ -817,6 +841,8 @@ class MusicLDM(DDPM):
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys)
             self.restarted_from_ckpt = True
+
+        self.z_channels = first_stage_config["params"]["ddconfig"]["z_channels"]
 
     def configure_optimizers(self):
         lr = self.learning_rate
@@ -873,8 +899,13 @@ class MusicLDM(DDPM):
             print("### USING STD-RESCALING ###")
             x = super().get_input(batch, self.first_stage_key)
             x = x.to(self.device)
+
+            #### 
+            x = self.adapt_fbank_for_VAE_encoder(x)
             encoder_posterior = self.encode_first_stage(x)
             z = self.get_first_stage_encoding(encoder_posterior).detach()
+            z=self.adapt_latent_for_LDM(z)
+
             del self.scale_factor
             self.register_buffer("scale_factor", 1.0 / z.flatten().std())
             print(f"setting self.scale_factor to {self.scale_factor}")
@@ -1087,6 +1118,52 @@ class MusicLDM(DDPM):
 
         return fold, unfold, normalization, weighting
 
+    def adapt_fbank_for_VAE_encoder(self, tensor):
+        # Assuming tensor shape is [batch_size, 1, num_channels, ...]
+        batch_size, _, num_channels, *dims = tensor.shape
+        
+        # Check if num_channels matches the model's num_stems
+        assert num_channels == self.num_stems, f"num_channels ({num_channels}) does not match model's num_stems ({self.num_stems})"
+        
+        # Reshape tensor to merge batch_size and num_channels for batch processing
+        # The new shape will be [batch_size * num_channels, 1, ...] where "..." represents the original last two dimensions
+        tensor_reshaped = tensor.view(batch_size * num_channels, 1, *dims)
+
+        return tensor_reshaped
+
+    def adapt_latent_for_LDM(self, tensor):
+        # Now, dynamically calculate the new shape for z to ensure batch_size remains unchanged
+        new_height, new_width = tensor.shape[-2:]
+        
+        # # Check if num_channels matches the model's num_stems
+        assert new_height == self.latent_t_size, f"latent_t_size ({new_height}) does not match model's latent_t_size ({self.latent_t_size})"
+        assert new_width == self.latent_f_size, f"latent_t_size ({new_height}) does not match model's latent_t_size ({self.latent_f_size})"
+
+        new_num_channels = self.num_stems * self.z_channels
+
+        # Calculate new number of channels based on the total number of elements in z divided by (batch_size * height * width)
+        total_elements = tensor.numel()
+        batch_size = total_elements // (new_num_channels * new_height * new_width)
+
+        tensor_reshaped = tensor.view(batch_size, new_num_channels, new_height, new_width)
+
+        return tensor_reshaped
+
+    def adapt_latent_for_VAE_decoder(self, tensor):
+        # Assume tensor shape is [batch_size, new_channel_size, 256, 16]
+        batch_size, new_cahnnel_size, height, width = tensor.shape
+        
+        
+        # Calculate the new batch size, keeping the total amount of data constant
+        # The total number of elements is divided by the product of the old_channel_size, height, and width
+        updated_batch_size = batch_size * (new_cahnnel_size // self.z_channels)
+        
+        # Reshape tensor to [batch_size_updated, old_channel_size, 256, 16]
+        tensor_reshaped = tensor.view(updated_batch_size,  self.z_channels, height, width)
+        
+        return tensor_reshaped
+
+
     @torch.no_grad()
     def get_input(
         self,
@@ -1165,8 +1242,15 @@ class MusicLDM(DDPM):
             x = x.to(self.device)
 
             if return_first_stage_encode:
-                encoder_posterior = self.encode_first_stage(x)
+            
+                # adapt multichannel before processing
+                x_reshaped = self.adapt_fbank_for_VAE_encoder(x)
+
+                encoder_posterior = self.encode_first_stage(x_reshaped)
                 z = self.get_first_stage_encoding(encoder_posterior).detach()
+
+                z = self.adapt_latent_for_LDM(z)
+
             else:
                 z = None
 
@@ -2117,16 +2201,11 @@ class MusicLDM(DDPM):
         use_ddim = ddim_steps is not None
         waveform_save_path = os.path.join(self.get_log_dir(), name)
         os.makedirs(waveform_save_path, exist_ok=True)
-        # print("\nWaveform save path: ", waveform_save_path)
+        # print("\nWaveform save path: ", waveform_save_path)              
 
-        # if self.cond_stage_model.embed_mode == "prompt":
-        #     waveform_orig_save_path = os.path.join(self.get_log_dir(), "orig_%s" % (self.global_step))
-        #     os.makedirs(waveform_orig_save_path, exist_ok=True)
-        #     # print("\nWaveform orig save path: ", waveform_orig_save_path)                  
-
-        #     wavefor_target_save_path = os.path.join(self.get_log_dir(), "target_%s" % (self.global_step))
-        #     os.makedirs(wavefor_target_save_path, exist_ok=True)
-        #     # print("\nWaveform target save path: ", wavefor_target_save_path)      
+        wavefor_target_save_path = os.path.join(self.get_log_dir(), "target_%s" % (self.global_step))
+        os.makedirs(wavefor_target_save_path, exist_ok=True)
+        # print("\nWaveform target save path: ", wavefor_target_save_path)      
 
         # if (
         #     "audiocaps" in waveform_save_path
@@ -2157,14 +2236,7 @@ class MusicLDM(DDPM):
                         if c is not None:
                             c = torch.cat([c] * n_gen, dim=0)
                         text = text * n_gen
-                    # elif self.cond_stage_model.embed_mode == "prompt":
-                    #     text = super().get_input(batch, "prompt")
-                    #     # Generate multiple samples
-                    #     batch_size = z.shape[0] * n_gen
-                    #     if c is not None:
-                    #         c = torch.cat([c] * n_gen, dim=0)
-                    #     text = torch.cat([text] * n_gen, dim=0)
-                    elif self.cond_stage_model.embed_mode in ["waveform", "audio"]:
+                    elif self.cond_stage_model.embed_mode == "audio":
                         text = super().get_input(batch, "waveform")
 
                         if c is not None:
@@ -2181,20 +2253,6 @@ class MusicLDM(DDPM):
 
                 fnames = list(super().get_input(batch, "fname"))
 
-                # if self.prompt_noise_steps is not None:   # not sure if this need to stay here at all
-
-                #     fbank_prompt = super().get_input(batch, "fbank_prompt")
-
-                #     prompt_encoder_posterior = self.encode_first_stage(fbank_prompt.unsqueeze(1))
-                #     prompt_z = self.get_first_stage_encoding(prompt_encoder_posterior).detach()
-                #     prompt_z = torch.cat([prompt_z] * n_gen, dim=0)
-
-                #     t = torch.full((batch_size,),self.prompt_noise_steps, device=self.device).long()
-                #     x_T = self.q_sample(x_start=prompt_z, t=t, noise=None)
-
-                # else:
-                #     pass
-
                 samples, _ = self.sample_log(
                     cond=c,
                     batch_size=batch_size,
@@ -2206,54 +2264,116 @@ class MusicLDM(DDPM):
                     unconditional_conditioning=unconditional_conditioning,
                     use_plms=use_plms,
                 )
+
+                samples = self.adapt_latent_for_VAE_decoder(samples)
                 mel = self.decode_first_stage(samples)
 
                 waveform = self.mel_spectrogram_to_waveform(
                     mel, savepath=waveform_save_path, bs=None, name=fnames, save=False
                 )
+
+                # downmix to songs for comparison
+                waveform_reshaped = waveform.reshape(batch_size, self.num_stems, waveform.shape[-1])
+                mix = waveform_reshaped.sum(axis=1)
+
                 waveform = np.nan_to_num(waveform)
                 waveform = np.clip(waveform, -1, 1)
+                
+                mix = np.nan_to_num(mix)
+                mix = np.clip(mix, -1, 1)
+
 
                 if self.model.conditioning_key is not None:
-                    similarity = self.cond_stage_model.cos_similarity(
-                        torch.FloatTensor(waveform).squeeze(1), text
-                    )
+                    if self.cond_stage_model.embed_mode == "text": # TODO maybe make similar for audio (???)
+                        similarity = self.cond_stage_model.cos_similarity(
+                            torch.FloatTensor(mix).squeeze(1), text
+                        )
 
-                    best_index = []
-                    for i in range(z.shape[0]):
-                        candidates = similarity[i :: z.shape[0]]
-                        max_index = torch.argmax(candidates).item()
-                        best_index.append(i + max_index * z.shape[0])
-                        # print("Similarity between generated audio and text", similarity)
-                        # print("Choose the following indexes:", best_index)
+                        best_index = []
+                        for i in range(z.shape[0]):
+                            candidates = similarity[i :: z.shape[0]]
+                            max_index = torch.argmax(candidates).item()
+                            best_index.append(i + max_index * z.shape[0])
+                            # print("Similarity between generated audio and text", similarity)
+                            # print("Choose the following indexes:", best_index)
+                    else:
+                        best_index = torch.arange(z.shape[0])
                 else:
                     best_index = torch.arange(z.shape[0])
 
-                waveform = waveform[best_index]
-                
-                self.save_waveform(waveform, waveform_save_path, name=fnames)
+                # chose best scored mixes
+                mix = mix[best_index]
 
-                # if self.cond_stage_model.embed_mode == "prompt":
-                #     orig_waveforms = text[best_index].unsqueeze(1).cpu().detach()
-                #     self.save_waveform(orig_waveforms, waveform_orig_save_path, name=fnames)
+                # chose coresponding stems audios and mels:
+                selected_wavs = []
+                selected_mels = []
+                for start_index in best_index:
 
-                #     target = super().get_input(batch, 'waveform')
-                #     target_waveforms = target.unsqueeze(1).cpu().detach()
-                #     self.save_waveform(target_waveforms, wavefor_target_save_path, name=fnames)
+                    actual_start_index = start_index * self.num_stems
+
+                    # Ensure the selection does not exceed array bounds
+                    selected_slice = waveform[actual_start_index:actual_start_index + self.num_stems]
+                    selected_wavs.append(selected_slice)
+
+                    selected_slice = mel[actual_start_index:actual_start_index + self.num_stems].cpu().detach().numpy()
+                    selected_mels.append(selected_slice)
 
                     
+                waveform = np.concatenate(selected_wavs, axis=0)[:,0,:]
+                waveform = waveform.reshape(z.shape[0], self.num_stems, waveform.shape[-1]) # back to batch size and multicahnnel
+
+                # test_names =  [str(number) for number in range(4)]                
+                # self.save_waveform(waveform[1][:, np.newaxis, :], "/home/karchkhadze/MusicLDM-Ext/test_folder", name=test_names)
+
+
+                mel = np.concatenate(selected_mels, axis=0)[:,0,:]
+                mel = mel.reshape(z.shape[0], self.num_stems, mel.shape[-2], mel.shape[-1]) # back to batch size and multicahnnel
+
+                ############################# saving audios for metrics ##################################
+                # save mixes
+                    #generated
+                generated_mix_dir = os.path.join(waveform_save_path, "mix")
+                os.makedirs(generated_mix_dir, exist_ok=True)
+                self.save_waveform(mix[:, np.newaxis, :], generated_mix_dir, name=fnames)
+                    #target
+                target_mix_dir = os.path.join(wavefor_target_save_path, "mix")
+                os.makedirs(target_mix_dir, exist_ok=True)
+                target_mix = super().get_input(batch, 'waveform')
+                self.save_waveform(target_mix.unsqueeze(1).cpu().detach(), target_mix_dir, name=fnames)
+
+                # save stems
+                target_waveforms = super().get_input(batch, 'waveform_stems')
+                for i in range(self.num_stems):
+                    
+                    # generated
+                    generated_stem_dir = os.path.join(os.path.join(waveform_save_path, "stem_"+str(i)))
+                    os.makedirs(generated_stem_dir, exist_ok=True)                    
+                    self.save_waveform(waveform[:,i,:][:, np.newaxis, :], generated_stem_dir, name=fnames)
+
+                    # target
+                    target_stem_dir = os.path.join(os.path.join(wavefor_target_save_path, "stem_"+str(i)))
+                    os.makedirs(target_stem_dir, exist_ok=True)                    
+                    self.save_waveform(target_waveforms[:,i,:].unsqueeze(1).cpu().detach(), target_stem_dir, name=fnames)
+
+                ###################################### logging ##############################################     
                 if self.logger is not None:
                     # create new list
-                    log_data_batch = mel[best_index], waveform, batch
-                    self.log_images_audios_response(log_data_batch)
+                    log_data_batch = mel, waveform, target_waveforms, mix, target_mix, fnames, batch
+                    self.log_images_audios(log_data_batch)
 
         return waveform_save_path
 
     def tensor2numpy(self, tensor):
         return tensor.cpu().detach().numpy()
     
-    def log_images_audios_response(self, log_data_batch):
-        mel, waveform, batch = log_data_batch
+    def log_images_audios(self, log_data_batch):
+        mel, waveform, target_waveforms, mix, target_mix, fnames, batch = log_data_batch
+
+        # Use get to safely access "text" from batch, defaulting to a list of empty string if not found
+        text = batch.get("text", [""] * mel.shape[0])
+
+        # get target mel
+        target_mel = self.tensor2numpy(batch['fbank_stems'])   
 
         name = "val"
 
@@ -2261,24 +2381,58 @@ class MusicLDM(DDPM):
         for i in range(mel.shape[0]):
             self.logger.log_image(
                 "Mel_specs %s" % name,
-                [np.flipud(self.tensor2numpy(batch["fbank"][i]).T), np.flipud(self.tensor2numpy(mel[i]).T) ],
-                caption=["orig_fbank_%s" %batch["fname"][i], "generated_%s" %batch["fname"][i],],
+                [np.concatenate([np.flipud(target_mel[i,j].T) for j in range(target_mel[i].shape[0])], axis=0), 
+                 np.concatenate([np.flipud(mel[i,j].T) for j in range(mel[i].shape[0])], axis=0) ],
+
+                caption=["target_fbank_%s" % fnames[i]+text[i], "generated_%s" %fnames[i]+text[i]],
             )
 
-            ### logginh audios ###
+            ### logging audios ###
 
-            self.logger.experiment.log(
-                {
-                    "orig_%s"
-                    % name: wandb.Audio(
-                        self.tensor2numpy(batch["waveform"])[i], caption= batch["fname"][i], sample_rate=16000,
-                    ),
-                    "generated_%s"
-                    % name: wandb.Audio(
-                        waveform.squeeze(1)[i], caption= batch["fname"][i] , sample_rate=16000,
-                    ),
-                }
-            )
+            log_dict = {}
+
+            log_dict ["target_%s"% name] =  wandb.Audio(
+                        self.tensor2numpy(target_mix)[i], caption= f"Full Song: {fnames[i]} {text[i]}", sample_rate=16000,)
+            log_dict ["generated_%s"% name] =wandb.Audio(
+                        mix[i], caption= f"Full Song: {fnames[i]} {text[i]}", sample_rate=16000,)
+
+            for k in range(self.num_stems):
+                log_dict[f"{name}_target_stem{k}"] = wandb.Audio(
+                            self.tensor2numpy(target_waveforms)[i,k], caption= f"Stem {k}: {fnames[i]} {text[i]}", sample_rate=16000,)
+                log_dict[f"{name}_generated_stem{k}"] = wandb.Audio(
+                            waveform[i,k], caption= f"Stem {k}: {fnames[i]} {text[i]}" , sample_rate=16000,)
+
+            # self.logger.experiment.log(
+            #     {
+            #         "target_%s"
+            #         % name: wandb.Audio(
+            #             self.tensor2numpy(target_mix)[i], caption= f"Full Song: {fnames[i]} {text[i]}", sample_rate=16000,
+            #         ),
+            #         "generated_%s"
+            #         % name: wandb.Audio(
+            #             mix[i], caption= f"Full Song: {fnames[i]} {text[i]}", sample_rate=16000,
+            #         ),
+            #     }
+            # )
+
+            # for k in range(self.num_stems):
+            #     self.logger.experiment.log(
+            #         {
+            #             f"{name}_target_stem{k}": wandb.Audio(
+            #                 self.tensor2numpy(target_waveforms)[i,k], caption= f"Stem {k}: {fnames[i]} {text[i]}", sample_rate=16000,
+            #             ),
+            #             f"{name}_generated_stem{k}": wandb.Audio(
+            #                 waveform[i,k], caption= f"Stem {k}: {fnames[i]} {text[i]}" , sample_rate=16000,
+            #             ),
+            #         }
+            #     )
+
+
+            # Log all audio files together
+            self.logger.experiment.log(log_dict)
+
+
+
 
     @torch.no_grad()
     def audio_continuation(

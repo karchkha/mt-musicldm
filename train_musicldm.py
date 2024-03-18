@@ -36,8 +36,8 @@ def main(config):
     print(f'Batch Size {batch_size} | Log Folder {log_path}')
 
     data = instantiate_from_config(config["data"])
-    # data.prepare_data()
-    # data.setup()
+    data.prepare_data()
+    data.setup()
 
     # adding a random number of seconds so that exp folder names coincide less often
     random_seconds_shift = datetime.timedelta(seconds=np.random.randint(60))
@@ -122,15 +122,15 @@ def main(config):
     ]
     save_top_k = config["trainer"]["save_top_k"]
 
-    # if validation_every_n_steps is not None and validation_every_n_steps > len(data.train_dataset):
-    #     validation_every_n_epochs = int(validation_every_n_steps / len(data.train_dataset))
-    #     validation_every_n_steps = None
-    # else:
-    #     validation_every_n_epochs = None
+    if validation_every_n_steps is not None and validation_every_n_steps > len(data.train_dataset):
+        validation_every_n_epochs = int(validation_every_n_steps / len(data.train_dataset))
+        validation_every_n_steps = None
+    else:
+        validation_every_n_epochs = None
 
-    # assert not (
-    #     validation_every_n_steps is not None and validation_every_n_epochs is not None
-    # )
+    assert not (
+        validation_every_n_steps is not None and validation_every_n_epochs is not None
+    )
 
     checkpoint_path = os.path.join(
         log_path,
@@ -183,7 +183,7 @@ def main(config):
 
 
     latent_diffusion = MusicLDM(**config["model"]["params"])
-    latent_diffusion.test_data_subset_path = config["data"]["params"]['path']['test_data']
+    # latent_diffusion.test_data_subset_path = config["data"]["params"]['path']['test_data']
     trainer = Trainer(
         max_epochs=max_epochs,
         accelerator=accelerator,
@@ -194,7 +194,7 @@ def main(config):
         limit_val_batches=limit_val_batches ,
         limit_train_batches = limit_train_batches,
         val_check_interval=validation_every_n_steps,
-        # check_val_every_n_epoch=validation_every_n_epochs,
+        check_val_every_n_epoch=validation_every_n_epochs,
         strategy=DDPStrategy(find_unused_parameters=False)
         if (len(devices) > 1)
         else None,
