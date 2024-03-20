@@ -27,7 +27,7 @@ class CLAPAudioEmbeddingClassifierFreev2(nn.Module):
         training_mode=True,
     ):
         super().__init__()
-        self.device = "cuda"
+        self.device = "cpu"
         self.precision = "fp32"
         self.amodel = "HTSAT-base"  # or 'PANN-14'
         self.tmodel = "roberta"  # the best text encoder in our training

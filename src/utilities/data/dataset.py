@@ -778,6 +778,25 @@ class MultiSource_Slakh_Dataset(DS_10283_2325_Dataset):
         offset = offset/self.config['preprocessing']['audio']['sampling_rate']
         return item, offset
 
+    def get_mel_from_waveform(self, waveform):
+        # waveform
+        y = torch.tensor(waveform).unsqueeze(0) #self.read_wav(filename, frame_offset)
+        
+        # get mel
+        y.requires_grad=False
+        melspec, _, _ = self.STFT.mel_spectrogram(y)
+        melspec = melspec[0].T
+        if melspec.size(0) < self.target_length:
+            melspec = torch.nn.functional.pad(melspec, (0,0,0,self.target_length - melspec.size(0)), 'constant', 0.)
+        else:
+            if not self.whole_track:
+                melspec = melspec[0: self.target_length, :]
+        if melspec.size(-1) % 2 != 0:
+            melspec = melspec[:, :-1]
+
+        return melspec.numpy()
+
+
     def __getitem__(self, index):
         idx = index % len(self.data)
         data_dict = {}
@@ -805,7 +824,9 @@ class MultiSource_Slakh_Dataset(DS_10283_2325_Dataset):
         # Mix audio and fbank features by summing; ensure same length and proper alignment
         # :TODO careful with potential clipping
         data_dict['waveform'] = np.sum(data_dict['waveform_stems'], axis=0)
-        data_dict['fbank'] = np.sum(data_dict['fbank_stems'], axis=0)
+        # data_dict['fbank'] = np.sum(data_dict['fbank_stems'], axis=0)
+
+        data_dict['fbank'] = self.get_mel_from_waveform(data_dict['waveform'])
 
 
         return data_dict
