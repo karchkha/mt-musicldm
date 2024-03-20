@@ -607,15 +607,42 @@ class DDPM(pl.LightningModule):
         assert not self.training, "Validation/Test must not be in training stage"
         if self.global_rank == 0:
             name = self.get_validation_folder_name()
-            self.generate_sample(
-                [batch],
-                name=name,
-                unconditional_guidance_scale=self.evaluation_params[
-                    "unconditional_guidance_scale"
-                ],
-                ddim_steps=self.evaluation_params["ddim_sampling_steps"],
-                n_gen=self.evaluation_params["n_candidates_per_samples"],
-            )
+
+            stems_to_inpaint = self.model._trainer.datamodule.config.get('path', {}).get('stems_to_inpaint', None)
+            stems = self.model._trainer.datamodule.config.get('path', {}).get('stems', [])
+
+            if stems_to_inpaint is not None:
+                stemidx_to_inpaint = [i for i,s in enumerate(stems) if s in stems_to_inpaint]
+
+                self.inpainting(
+                    [batch],
+                    ddim_steps=self.evaluation_params["ddim_sampling_steps"],
+                    ddim_eta=1.0,
+                    x_T=None,
+                    n_gen=self.evaluation_params["n_candidates_per_samples"],
+                    unconditional_guidance_scale=self.evaluation_params[
+                        "unconditional_guidance_scale"
+                    ],
+                    unconditional_conditioning=None,
+                    name=name,
+                    use_plms=False,
+                    stemidx_to_inpaint = stemidx_to_inpaint,
+                )
+
+            else:
+                
+
+
+
+                self.generate_sample(
+                    [batch],
+                    name=name,
+                    unconditional_guidance_scale=self.evaluation_params[
+                        "unconditional_guidance_scale"
+                    ],
+                    ddim_steps=self.evaluation_params["ddim_sampling_steps"],
+                    n_gen=self.evaluation_params["n_candidates_per_samples"],
+                )
 
         _, loss_dict_no_ema = self.shared_step(batch)
         with self.ema_scope():
@@ -1243,14 +1270,21 @@ class MusicLDM(DDPM):
 
             if return_first_stage_encode:
             
-                # adapt multichannel before processing
-                x_reshaped = self.adapt_fbank_for_VAE_encoder(x)
+                if k == "fbank_stems":
+                    # adapt multichannel before processing
+                    x_reshaped = self.adapt_fbank_for_VAE_encoder(x)
 
-                encoder_posterior = self.encode_first_stage(x_reshaped)
-                z = self.get_first_stage_encoding(encoder_posterior).detach()
+                    encoder_posterior = self.encode_first_stage(x_reshaped)
+                    z = self.get_first_stage_encoding(encoder_posterior).detach()
 
-                z = self.adapt_latent_for_LDM(z)
+                    z = self.adapt_latent_for_LDM(z)
 
+                elif k == "fbank":
+
+                    encoder_posterior = self.encode_first_stage(x)
+                    z = self.get_first_stage_encoding(encoder_posterior).detach()
+                else:
+                    raise NotImplementedError
             else:
                 z = None
 
@@ -2530,6 +2564,16 @@ class MusicLDM(DDPM):
                 self.save_waveform(waveform, waveform_save_path, name=fnames)
 
     @torch.no_grad()
+    def generate_inpaint_mask(self, z, stemidx_to_inpaint: List[int]):
+        mask = torch.ones_like(z)
+        for stem_idx in stemidx_to_inpaint:
+            channel_start = stem_idx * 8  # Calculate the start channel for the instrument
+            channel_end = channel_start + 8  # Calculate the end channel for the instrument
+            mask[:, channel_start:channel_end, :, :] = 0.0  # Mask the channels for the instrument
+        return mask
+
+
+    @torch.no_grad()
     def inpainting(
         self,
         batchs,
@@ -2556,6 +2600,13 @@ class MusicLDM(DDPM):
         waveform_save_path = os.path.join(self.get_log_dir(), name)
         os.makedirs(waveform_save_path, exist_ok=True)
         print("Waveform save path: ", waveform_save_path)
+
+        wavefor_target_save_path = os.path.join(self.get_log_dir(), "target_%s" % (self.global_step))
+        os.makedirs(wavefor_target_save_path, exist_ok=True)
+        print("\nWaveform target save path: ", wavefor_target_save_path)      
+
+
+
         with self.ema_scope("Plotting Inpaint"):
             for batch in batchs:
                 z, c = self.get_input(
@@ -2566,25 +2617,55 @@ class MusicLDM(DDPM):
                     return_original_cond=False,
                     bs=None,
                 )
-                text = super().get_input(batch, "text")
+                # text = super().get_input(batch, "text")
 
-                # Generate multiple samples
-                batch_size = z.shape[0] * n_gen
-                c = torch.cat([c] * n_gen, dim=0)
-                text = text * n_gen
+                # # Generate multiple samples
+                # batch_size = z.shape[0] * n_gen
+                # c = torch.cat([c] * n_gen, dim=0)
+                # text = text * n_gen
 
-                if unconditional_guidance_scale != 1.0:
-                    unconditional_conditioning = (
-                        self.cond_stage_model.get_unconditional_condition(batch_size)
-                    )
+                # if unconditional_guidance_scale != 1.0:
+                #     unconditional_conditioning = (
+                #         self.cond_stage_model.get_unconditional_condition(batch_size)
+                #     )
+
+                if self.cond_stage_model is not None:
+
+                    # Generate multiple samples
+                    batch_size = z.shape[0] * n_gen
+
+                    if self.cond_stage_model.embed_mode == "text":
+                        text = super().get_input(batch, "text")
+                       
+                        if c is not None:
+                            c = torch.cat([c] * n_gen, dim=0)
+                        text = text * n_gen
+                    elif self.cond_stage_model.embed_mode == "audio":
+                        text = super().get_input(batch, "waveform")
+
+                        if c is not None:
+                            c = torch.cat([c] * n_gen, dim=0)
+                        text = torch.cat([text] * n_gen, dim=0)
+
+                    if unconditional_guidance_scale != 1.0:
+                        unconditional_conditioning = (
+                            self.cond_stage_model.get_unconditional_condition(batch_size)
+                        )
+                else:
+                    batch_size = z.shape[0]
+                    text = None
+
 
                 fnames = list(super().get_input(batch, "fname"))
 
-                _, h, w = z.shape[0], z.shape[2], z.shape[3]
+                # _, h, w = z.shape[0], z.shape[2], z.shape[3]
 
-                mask = torch.ones(batch_size, h, w).to(self.device)
-                mask[:, h // 4 : 3 * (h // 4), :] = 0
-                mask = mask[:, None, ...]
+                # mask = torch.ones(batch_size, h, w).to(self.device)
+                # mask[:, h // 4 : 3 * (h // 4), :] = 0
+                # mask = mask[:, None, ...]
+
+                mask = self.generate_inpaint_mask(z, kwargs["stemidx_to_inpaint"])
+
 
                 samples, _ = self.sample_log(
                     cond=c,
@@ -2600,28 +2681,126 @@ class MusicLDM(DDPM):
                     x0=torch.cat([z] * n_gen, dim=0),
                 )
 
+                # mel = self.decode_first_stage(samples)
+
+                # waveform = self.mel_spectrogram_to_waveform(
+                #     mel, savepath=waveform_save_path, bs=None, name=fnames, save=False
+                # )
+
+                # similarity = self.cond_stage_model.cos_similarity(
+                #     torch.FloatTensor(waveform).squeeze(1), text
+                # )
+
+                # best_index = []
+                # for i in range(z.shape[0]):
+                #     candidates = similarity[i :: z.shape[0]]
+                #     max_index = torch.argmax(candidates).item()
+                #     best_index.append(i + max_index * z.shape[0])
+
+                # waveform = waveform[best_index]
+
+                # print("Similarity between generated audio and text", similarity)
+                # print("Choose the following indexes:", best_index)
+
+                # self.save_waveform(waveform, waveform_save_path, name=fnames)
+
+                samples = self.adapt_latent_for_VAE_decoder(samples)
                 mel = self.decode_first_stage(samples)
 
                 waveform = self.mel_spectrogram_to_waveform(
                     mel, savepath=waveform_save_path, bs=None, name=fnames, save=False
                 )
 
-                similarity = self.cond_stage_model.cos_similarity(
-                    torch.FloatTensor(waveform).squeeze(1), text
-                )
+                # downmix to songs for comparison
+                waveform_reshaped = waveform.reshape(batch_size, self.num_stems, waveform.shape[-1])
+                mix = waveform_reshaped.sum(axis=1)
 
-                best_index = []
-                for i in range(z.shape[0]):
-                    candidates = similarity[i :: z.shape[0]]
-                    max_index = torch.argmax(candidates).item()
-                    best_index.append(i + max_index * z.shape[0])
+                waveform = np.nan_to_num(waveform)
+                waveform = np.clip(waveform, -1, 1)
+                
+                mix = np.nan_to_num(mix)
+                mix = np.clip(mix, -1, 1)
 
-                waveform = waveform[best_index]
 
-                print("Similarity between generated audio and text", similarity)
-                print("Choose the following indexes:", best_index)
+                if self.model.conditioning_key is not None:
+                    if self.cond_stage_model.embed_mode == "text": # TODO maybe make similar for audio (???)
+                        similarity = self.cond_stage_model.cos_similarity(
+                            torch.FloatTensor(mix).squeeze(1), text
+                        )
 
-                self.save_waveform(waveform, waveform_save_path, name=fnames)
+                        best_index = []
+                        for i in range(z.shape[0]):
+                            candidates = similarity[i :: z.shape[0]]
+                            max_index = torch.argmax(candidates).item()
+                            best_index.append(i + max_index * z.shape[0])
+                            # print("Similarity between generated audio and text", similarity)
+                            # print("Choose the following indexes:", best_index)
+                    else:
+                        best_index = torch.arange(z.shape[0])
+                else:
+                    best_index = torch.arange(z.shape[0])
+
+                # chose best scored mixes
+                mix = mix[best_index]
+
+                # chose coresponding stems audios and mels:
+                selected_wavs = []
+                selected_mels = []
+                for start_index in best_index:
+
+                    actual_start_index = start_index * self.num_stems
+
+                    # Ensure the selection does not exceed array bounds
+                    selected_slice = waveform[actual_start_index:actual_start_index + self.num_stems]
+                    selected_wavs.append(selected_slice)
+
+                    selected_slice = mel[actual_start_index:actual_start_index + self.num_stems].cpu().detach().numpy()
+                    selected_mels.append(selected_slice)
+
+                    
+                waveform = np.concatenate(selected_wavs, axis=0)[:,0,:]
+                waveform = waveform.reshape(z.shape[0], self.num_stems, waveform.shape[-1]) # back to batch size and multicahnnel
+
+                # test_names =  [str(number) for number in range(4)]                
+                # self.save_waveform(waveform[1][:, np.newaxis, :], "/home/karchkhadze/MusicLDM-Ext/test_folder", name=test_names)
+
+
+                mel = np.concatenate(selected_mels, axis=0)[:,0,:]
+                mel = mel.reshape(z.shape[0], self.num_stems, mel.shape[-2], mel.shape[-1]) # back to batch size and multicahnnel
+
+                ############################# saving audios for metrics ##################################
+                # save mixes
+                    #generated
+                generated_mix_dir = os.path.join(waveform_save_path, "mix")
+                os.makedirs(generated_mix_dir, exist_ok=True)
+                self.save_waveform(mix[:, np.newaxis, :], generated_mix_dir, name=fnames)
+                    #target
+                target_mix_dir = os.path.join(wavefor_target_save_path, "mix")
+                os.makedirs(target_mix_dir, exist_ok=True)
+                target_mix = super().get_input(batch, 'waveform')
+                self.save_waveform(target_mix.unsqueeze(1).cpu().detach(), target_mix_dir, name=fnames)
+
+                # save stems
+                target_waveforms = super().get_input(batch, 'waveform_stems')
+                for i in range(self.num_stems):
+                    
+                    # generated
+                    generated_stem_dir = os.path.join(os.path.join(waveform_save_path, "stem_"+str(i)))
+                    os.makedirs(generated_stem_dir, exist_ok=True)                    
+                    self.save_waveform(waveform[:,i,:][:, np.newaxis, :], generated_stem_dir, name=fnames)
+
+                    # target
+                    target_stem_dir = os.path.join(os.path.join(wavefor_target_save_path, "stem_"+str(i)))
+                    os.makedirs(target_stem_dir, exist_ok=True)                    
+                    self.save_waveform(target_waveforms[:,i,:].unsqueeze(1).cpu().detach(), target_stem_dir, name=fnames)
+
+                ###################################### logging ##############################################     
+                if self.logger is not None:
+                    # create new list
+                    log_data_batch = mel, waveform, target_waveforms, mix, target_mix, fnames, batch
+                    self.log_images_audios(log_data_batch)
+
+
 
     @torch.no_grad()
     def inpainting_half(
