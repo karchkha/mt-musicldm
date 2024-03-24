@@ -127,8 +127,8 @@ class DDIMSampler(object):
 
         self.make_schedule(ddim_num_steps=S, ddim_eta=eta, verbose=verbose)
         # sampling
-        C, H, W = shape
-        size = (batch_size, C, H, W)
+        C, Z_C, H, W = shape
+        size = (batch_size, C, Z_C, H, W)
         print(f"Data shape for DDIM sampling is {size}, eta {eta}")
         samples, intermediates = self.ddim_sampling(
             conditioning,
@@ -357,11 +357,11 @@ class DDIMSampler(object):
             else self.ddim_sigmas
         )
         # select parameters corresponding to the currently considered timestep
-        a_t = torch.full((b, 1, 1, 1), alphas[index], device=device)
-        a_prev = torch.full((b, 1, 1, 1), alphas_prev[index], device=device)
-        sigma_t = torch.full((b, 1, 1, 1), sigmas[index], device=device)
+        a_t = torch.full((b, 1, 1, 1, 1), alphas[index], device=device)
+        a_prev = torch.full((b, 1, 1, 1, 1), alphas_prev[index], device=device)
+        sigma_t = torch.full((b, 1, 1, 1, 1), sigmas[index], device=device)
         sqrt_one_minus_at = torch.full(
-            (b, 1, 1, 1), sqrt_one_minus_alphas[index], device=device
+            (b, 1, 1, 1, 1), sqrt_one_minus_alphas[index], device=device
         )
 
         # current prediction for x_0

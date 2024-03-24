@@ -1166,27 +1166,27 @@ class MusicLDM(DDPM):
         assert new_height == self.latent_t_size, f"latent_t_size ({new_height}) does not match model's latent_t_size ({self.latent_t_size})"
         assert new_width == self.latent_f_size, f"latent_t_size ({new_height}) does not match model's latent_t_size ({self.latent_f_size})"
 
-        new_num_channels = self.num_stems * self.z_channels
+        # new_num_channels = self.num_stems #* self.z_channels
 
-        # Calculate new number of channels based on the total number of elements in z divided by (batch_size * height * width)
-        total_elements = tensor.numel()
-        batch_size = total_elements // (new_num_channels * new_height * new_width)
+        # # Calculate new number of channels based on the total number of elements in z divided by (batch_size * height * width)
+        # total_elements = tensor.numel()
+        # batch_size = total_elements // (new_num_channels * new_height * new_width)
 
-        tensor_reshaped = tensor.view(batch_size, new_num_channels, new_height, new_width)
+        tensor_reshaped = tensor.view(-1, self.num_stems, self.z_channels, new_height, new_width)
 
         return tensor_reshaped
 
     def adapt_latent_for_VAE_decoder(self, tensor):
         # Assume tensor shape is [batch_size, new_channel_size, 256, 16]
-        batch_size, new_cahnnel_size, height, width = tensor.shape
+        batch_size, new_stem, new_cahnnel_size, height, width = tensor.shape
         
         
         # Calculate the new batch size, keeping the total amount of data constant
         # The total number of elements is divided by the product of the old_channel_size, height, and width
-        updated_batch_size = batch_size * (new_cahnnel_size // self.z_channels)
+        # updated_batch_size = batch_size * (new_cahnnel_size // self.z_channels)
         
         # Reshape tensor to [batch_size_updated, old_channel_size, 256, 16]
-        tensor_reshaped = tensor.view(updated_batch_size,  self.z_channels, height, width)
+        tensor_reshaped = tensor.view(-1,  self.z_channels, height, width)
         
         return tensor_reshaped
 
@@ -1642,7 +1642,7 @@ class MusicLDM(DDPM):
         else:
             raise NotImplementedError()
         # print(model_output.size(), target.size())
-        loss_simple = self.get_loss(model_output, target, mean=False).mean([1, 2, 3])
+        loss_simple = self.get_loss(model_output, target, mean=False).mean([1, 2, 3, 4])
         loss_dict.update({f"{prefix}/loss_simple": loss_simple.mean()})
 
         logvar_t = self.logvar[t].to(self.device)
@@ -1654,7 +1654,7 @@ class MusicLDM(DDPM):
 
         loss = self.l_simple_weight * loss.mean()
 
-        loss_vlb = self.get_loss(model_output, target, mean=False).mean(dim=(1, 2, 3))
+        loss_vlb = self.get_loss(model_output, target, mean=False).mean(dim=(1, 2, 3, 4))
         loss_vlb = (self.lvlb_weights[t] * loss_vlb).mean()
         loss_dict.update({f"{prefix}/loss_vlb": loss_vlb})
         loss += self.original_elbo_weight * loss_vlb
@@ -1994,9 +1994,9 @@ class MusicLDM(DDPM):
     ):
 
         if mask is not None:
-            shape = (self.channels, mask.size()[-2], mask.size()[-1])
+            shape = (self.channels, self.z_channels, mask.size()[-2], mask.size()[-1])
         else:
-            shape = (self.channels, self.latent_t_size, self.latent_f_size)
+            shape = (self.channels, self.z_channels, self.latent_t_size, self.latent_f_size)
 
         intermediate = None
         if ddim and not use_plms:
