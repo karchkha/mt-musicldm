@@ -2368,6 +2368,8 @@ class MusicLDM(DDPM):
                     #generated
                 generated_mix_dir = os.path.join(waveform_save_path, "mix")
                 os.makedirs(generated_mix_dir, exist_ok=True)
+                if mix.ndim == 1:
+                    mix = mix[np.newaxis, :] 
                 self.save_waveform(mix[:, np.newaxis, :], generated_mix_dir, name=fnames)
                     #target
                 target_mix_dir = os.path.join(wavefor_target_save_path, "mix")
