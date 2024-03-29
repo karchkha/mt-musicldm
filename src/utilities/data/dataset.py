@@ -66,6 +66,17 @@ class AudiostockDataset(Dataset):
 
         # self.read_datafile(dataset_path, label_path, train)
 
+        self.melbins = config["preprocessing"]["mel"]["n_mel_channels"]
+        self.freqm = config["preprocessing"]["mel"]["freqm"]
+        self.timem = config["preprocessing"]["mel"]["timem"]
+        self.mixup = config["augmentation"]["mixup"]
+        self.sampling_rate = config["preprocessing"]["audio"]["sampling_rate"]
+        self.hopsize = config["preprocessing"]["stft"]["hop_length"]
+        self.target_length = config["preprocessing"]["mel"]["target_length"]
+        self.use_blur = config["preprocessing"]["mel"]["blur"]
+        self.segment_length = int(self.target_length * self.hopsize)
+        self.whole_track = whole_track
+
         self.data = []
         if type(dataset_path) is str:
             self.data = self.read_datafile(dataset_path, label_path, train) 
@@ -79,19 +90,6 @@ class AudiostockDataset(Dataset):
         print("Data size: {}".format(len(self.data)))
 
         self.total_len = int(len(self.data) * factor)
-
-
-        self.melbins = config["preprocessing"]["mel"]["n_mel_channels"]
-        self.freqm = config["preprocessing"]["mel"]["freqm"]
-        self.timem = config["preprocessing"]["mel"]["timem"]
-        self.mixup = config["augmentation"]["mixup"]
-        self.sampling_rate = config["preprocessing"]["audio"]["sampling_rate"]
-        self.hopsize = config["preprocessing"]["stft"]["hop_length"]
-        self.target_length = config["preprocessing"]["mel"]["target_length"]
-        self.use_blur = config["preprocessing"]["mel"]["blur"]
-        self.segment_length = int(self.target_length * self.hopsize)
-        self.whole_track = whole_track
-
 
         try:
             self.segment_size = config["preprocessing"]["audio"]["segment_size"]
@@ -337,7 +335,7 @@ class AudiostockDataset(Dataset):
 
 class DS_10283_2325_Dataset(AudiostockDataset):
     def __init__(self, dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False) -> None:
-        super().__init__(dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False)  
+        super().__init__(dataset_path, label_path, config, train = train, factor = factor, whole_track = whole_track)  
 
     def read_datafile(self, dataset_path, label_path, train):
         file_path = dataset_path
@@ -434,7 +432,7 @@ class DS_10283_2325_Dataset(AudiostockDataset):
 
 class Audiostock_splited_Dataset(DS_10283_2325_Dataset):
     def __init__(self, dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False) -> None:
-        super().__init__(dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False)  
+        super().__init__(dataset_path, label_path, config, train = train, factor = factor, whole_track = whole_track)  
 
     def read_datafile(self, dataset_path, label_path, train):
         file_path = dataset_path
@@ -546,7 +544,7 @@ class Audiostock_splited_Dataset(DS_10283_2325_Dataset):
 
 class Slakh_Dataset(DS_10283_2325_Dataset):
     def __init__(self, dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False) -> None:
-        super().__init__(dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False)  
+        super().__init__(dataset_path, label_path, config, train = train, factor = factor, whole_track = whole_track)  
 
     def read_datafile(self, dataset_path, label_path, train):
 
@@ -660,7 +658,7 @@ class Slakh_Dataset(DS_10283_2325_Dataset):
 
 class MultiSource_Slakh_Dataset(DS_10283_2325_Dataset):
     def __init__(self, dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False) -> None:
-        super().__init__(dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False)  
+        super().__init__(dataset_path, label_path, config, train = train, factor = factor, whole_track = whole_track)  
 
     def get_duration_sec(self, file, cache=False):
 
@@ -699,11 +697,11 @@ class MultiSource_Slakh_Dataset(DS_10283_2325_Dataset):
             durations_track = np.array([self.get_duration_sec(file, cache=True) * self.config['preprocessing']['audio']['sampling_rate'] for file in files]) # Could be approximate
             
             # skip if there is a source that is shorter than minimum track length
-            if (durations_track / self.config['preprocessing']['audio']['sampling_rate'] < 10).any():
+            if (durations_track / self.config['preprocessing']['audio']['sampling_rate'] < 10.24).any():
                 continue
             
             # skip if there is a source that is longer than maximum track length
-            if (durations_track / self.config['preprocessing']['audio']['sampling_rate'] >= 600).any():
+            if (durations_track / self.config['preprocessing']['audio']['sampling_rate'] >= 640.0).any():
                 print("skiping_file:", track)
                 continue
             
@@ -738,6 +736,37 @@ class MultiSource_Slakh_Dataset(DS_10283_2325_Dataset):
             # Append the dictionary to the data list
             data.append(track_info)
 
+        entries_to_remove = []  # List to store entries to be removed
+        max_samples = 640.0 * self.config['preprocessing']['audio']['sampling_rate']
+
+        # Temporary list to hold all data including new segments
+        temp_data = []
+
+        for entry in data:
+            entry['frame_offset'] = 0
+            duration = entry['duration']
+
+            # Always add the original entry to temp_data
+            temp_data.append(entry)
+
+            # Handle long files by adding new segments immediately after the original entry
+            if duration > self.segment_length:
+                num_copies = int((min(duration, max_samples) - self.segment_length) / self.segment_length)
+                for i in range(num_copies):
+                    new_entry = entry.copy()
+                    new_entry['frame_offset'] = (i + 1) * self.segment_length
+                    temp_data.append(new_entry)  # Add new segment right after the original entry
+
+            # Mark very short files for removal
+            if duration < 0.2:
+                entries_to_remove.append(entry)
+
+        # Remove the short entries directly from temp_data
+        temp_data = [entry for entry in temp_data if entry not in entries_to_remove]
+
+        # Now, temp_data has all the data in the desired order
+        data = temp_data
+
         return data
 
 
@@ -763,14 +792,17 @@ class MultiSource_Slakh_Dataset(DS_10283_2325_Dataset):
 
         # For a given dataset item and shift, return song index and offset within song
         half_interval = self.segment_length // 2
-
+        shift = np.random.randint(-half_interval, half_interval) if self.train else 0
+        offset = item["frame_offset"] + shift  # Note we centred shifts, so adding now
         
-        start, end = 0.0, self.data[item]["duration"]  # start and end of current song
+        start, end = 0.0, item["duration"]  # start and end of current song
         
-        offset = np.random.randint(start, end)  # random shif
+        # offset = np.random.randint(start, end)  # random shift
 
         if offset > end - self.segment_length:  # Going over song
             offset = max(start, offset - half_interval)  # Now should fit
+        if offset < start:  # Going under zero
+            offset = 0.0 # Now should fit
         # assert (
         #         start <= offset <= end - self.segment_length
         # ), f"Offset {offset} not in [{start}, {end - self.segment_length}]. End: {end}, SL: {self.segment_length}, Index: {item}"
@@ -802,7 +834,7 @@ class MultiSource_Slakh_Dataset(DS_10283_2325_Dataset):
         data_dict = {}
         f = self.data[idx]
 
-        index, frame_offset = self.get_index_offset(idx)
+        index, frame_offset = self.get_index_offset(f)
         # wav = self.get_song_chunk(index, offset)
         # return self.transform(torch.from_numpy(wav))
 
