@@ -23,6 +23,9 @@ class DataModuleFromConfig(pl.LightningDataModule):
         self.config["preprocessing"] = preprocessing
         self.config["augmentation"] = augmentation
 
+        # Safely check for 'shuffle_val_test' in the config and set it to False if not found
+        self.shuffle_val_test = self.config.get("path", {}).get("shuffle_val_test", False)
+
 
     def prepare_data(self):
         # This method is used for data download and preprocessing (if any)
@@ -150,8 +153,8 @@ class DataModuleFromConfig(pl.LightningDataModule):
 
     def val_dataloader(self):
         # Returns the DataLoader for the validation dataset
-        return torch.utils.data.DataLoader(self.val_dataset, batch_size=self.batch_size, num_workers=self.num_workers)
+        return torch.utils.data.DataLoader(self.val_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle = self.shuffle_val_test)
 
     def test_dataloader(self):
         # Returns the DataLoader for the test dataset
-        return torch.utils.data.DataLoader(self.test_dataset, batch_size=self.batch_size, num_workers=self.num_workers)
+        return torch.utils.data.DataLoader(self.test_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle = self.shuffle_val_test)

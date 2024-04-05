@@ -2569,9 +2569,9 @@ class MusicLDM(DDPM):
     def generate_inpaint_mask(self, z, stemidx_to_inpaint: List[int]):
         mask = torch.ones_like(z)
         for stem_idx in stemidx_to_inpaint:
-            channel_start = stem_idx * 8  # Calculate the start channel for the instrument
-            channel_end = channel_start + 8  # Calculate the end channel for the instrument
-            mask[:, channel_start:channel_end, :, :] = 0.0  # Mask the channels for the instrument
+            # channel_start = stem_idx * 8  # Calculate the start channel for the instrument
+            # channel_end = channel_start + 8  # Calculate the end channel for the instrument
+            mask[:, stem_idx, :, :, :] = 0.0  # Mask the channels for the instrument
         return mask
 
 
@@ -2713,13 +2713,23 @@ class MusicLDM(DDPM):
                     mel, savepath=waveform_save_path, bs=None, name=fnames, save=False
                 )
 
-                # downmix to songs for comparison
-                waveform_reshaped = waveform.reshape(batch_size, self.num_stems, waveform.shape[-1])
-                mix = waveform_reshaped.sum(axis=1)
-
                 waveform = np.nan_to_num(waveform)
                 waveform = np.clip(waveform, -1, 1)
+
+                # downmix to songs for comparison
+                waveform_reshaped = waveform.reshape(batch_size, self.num_stems, waveform.shape[-1])
                 
+                target_waveforms = super().get_input(batch, 'waveform_stems')
+
+                waveform_reshaped = waveform_reshaped[:, :, :target_waveforms.shape[-1]] # trancate generated wvaeform because vocoder egenretas audio 32 samples longer than we need :))
+                # Replace waveforms for all stems not in kwargs["stemidx_to_inpaint"]
+                for idx in range(self.num_stems):
+                    if idx not in kwargs["stemidx_to_inpaint"]:        
+                        waveform_reshaped[:, idx, :] = target_waveforms[:, idx, :].cpu().numpy()
+                waveform = waveform_reshaped.reshape(batch_size * self.num_stems, 1, waveform_reshaped.shape[-1])
+
+                mix = waveform_reshaped.sum(axis=1)
+               
                 mix = np.nan_to_num(mix)
                 mix = np.clip(mix, -1, 1)
 
@@ -2783,25 +2793,77 @@ class MusicLDM(DDPM):
                 self.save_waveform(target_mix.unsqueeze(1).cpu().detach(), target_mix_dir, name=fnames)
 
                 # save stems
-                target_waveforms = super().get_input(batch, 'waveform_stems')
-                for i in range(self.num_stems):
+                # target_waveforms = super().get_input(batch, 'waveform_stems')
+                # for i in range(self.num_stems):
                     
-                    # generated
-                    generated_stem_dir = os.path.join(os.path.join(waveform_save_path, "stem_"+str(i)))
-                    os.makedirs(generated_stem_dir, exist_ok=True)                    
-                    self.save_waveform(waveform[:,i,:][:, np.newaxis, :], generated_stem_dir, name=fnames)
+                #     # generated
+                #     generated_stem_dir = os.path.join(os.path.join(waveform_save_path, "stem_"+str(i)))
+                #     os.makedirs(generated_stem_dir, exist_ok=True)                    
+                #     self.save_waveform(waveform[:,i,:][:, np.newaxis, :], generated_stem_dir, name=fnames)
 
-                    # target
-                    target_stem_dir = os.path.join(os.path.join(wavefor_target_save_path, "stem_"+str(i)))
-                    os.makedirs(target_stem_dir, exist_ok=True)                    
-                    self.save_waveform(target_waveforms[:,i,:].unsqueeze(1).cpu().detach(), target_stem_dir, name=fnames)
+                #     # target
+                #     target_stem_dir = os.path.join(os.path.join(wavefor_target_save_path, "stem_"+str(i)))
+                #     os.makedirs(target_stem_dir, exist_ok=True)                    
+                #     self.save_waveform(target_waveforms[:,i,:].unsqueeze(1).cpu().detach(), target_stem_dir, name=fnames)
 
+
+                # for i in range(z.shape[0]):
+                    
+                # generated
+                generated_stem_dir = os.path.join(os.path.join(waveform_save_path, "stem_"+"_".join(map(str, kwargs["stemidx_to_inpaint"]))))
+                os.makedirs(generated_stem_dir, exist_ok=True)  
+                generated_stems = waveform[:,kwargs["stemidx_to_inpaint"],:][:, np.newaxis, :].sum(-2)                  
+                self.save_waveform(generated_stems, generated_stem_dir, name=fnames)
+
+                # target
+                target_stem_dir = os.path.join(os.path.join(wavefor_target_save_path, "stem_"+"_".join(map(str, kwargs["stemidx_to_inpaint"]))))
+                os.makedirs(target_stem_dir, exist_ok=True)    
+                target_stems = target_waveforms[:,kwargs["stemidx_to_inpaint"],:].unsqueeze(1).sum(-2).cpu().detach()          
+                self.save_waveform(target_stems, target_stem_dir, name=fnames)
                 ###################################### logging ##############################################     
                 if self.logger is not None:
                     # create new list
-                    log_data_batch = mel, waveform, target_waveforms, mix, target_mix, fnames, batch
-                    self.log_images_audios(log_data_batch)
+                    log_data_batch = mel, generated_stems, target_stems, mix, target_mix, fnames, batch
+                    self.log_images_audios_inpaint(log_data_batch)
 
+    def log_images_audios_inpaint(self, log_data_batch):
+        mel, waveform, target_waveforms, mix, target_mix, fnames, batch = log_data_batch
+
+        # Use get to safely access "text" from batch, defaulting to a list of empty string if not found
+        text = batch.get("text", [""] * mel.shape[0])
+
+        # get target mel
+        target_mel = self.tensor2numpy(batch['fbank_stems'])   
+
+        name = "val"
+
+        ### logginh spectrograms ###
+        for i in range(mel.shape[0]):
+            self.logger.log_image(
+                "Mel_specs %s" % name,
+                [np.concatenate([np.flipud(target_mel[i,j].T) for j in range(target_mel[i].shape[0])], axis=0), 
+                 np.concatenate([np.flipud(mel[i,j].T) for j in range(mel[i].shape[0])], axis=0) ],
+
+                caption=["target_fbank_%s" % fnames[i]+text[i], "generated_%s" %fnames[i]+text[i]],
+            )
+
+            ### logging audios ###
+
+            log_dict = {}
+
+            log_dict ["target_%s"% name] =  wandb.Audio(
+                        self.tensor2numpy(target_mix)[i], caption= f"Full Song: {fnames[i]} {text[i]}", sample_rate=16000,)
+            log_dict ["generated_%s"% name] =wandb.Audio(
+                        mix[i], caption= f"Full Song: {fnames[i]} {text[i]}", sample_rate=16000,)
+
+            # for k in range(self.num_stems):
+            log_dict[f"{name}_target_stem"] = wandb.Audio(
+                        self.tensor2numpy(target_waveforms)[i,0], caption= f"Stem: {fnames[i]} {text[i]}", sample_rate=16000,)
+            log_dict[f"{name}_generated_stem"] = wandb.Audio(
+                        waveform[i,0], caption= f"Stem: {fnames[i]} {text[i]}" , sample_rate=16000,)
+
+            # Log all audio files together
+            self.logger.experiment.log(log_dict)
 
 
     @torch.no_grad()
