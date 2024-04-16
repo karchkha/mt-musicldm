@@ -660,6 +660,8 @@ class MultiSource_Slakh_Dataset(DS_10283_2325_Dataset):
     def __init__(self, dataset_path, label_path, config, train = True, factor = 1.0, whole_track = False) -> None:
         super().__init__(dataset_path, label_path, config, train = train, factor = factor, whole_track = whole_track)  
 
+        self.text_prompt = config.get('path', {}).get('text_prompt', None)
+
     def get_duration_sec(self, file, cache=False):
 
         if not os.path.exists(file):
@@ -859,6 +861,9 @@ class MultiSource_Slakh_Dataset(DS_10283_2325_Dataset):
         # data_dict['fbank'] = np.sum(data_dict['fbank_stems'], axis=0)
 
         data_dict['fbank'] = self.get_mel_from_waveform(data_dict['waveform'])
+
+        if self.text_prompt is not None:
+           data_dict["text"] = self.text_prompt
 
 
         return data_dict
