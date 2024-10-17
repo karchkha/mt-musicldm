@@ -11,7 +11,7 @@ To install Multi-Track MusicLDM, follow these steps:
 
 Clone the repository to your local machine
 ```bash
-$ git clone 
+$ git clone https://github.com/karchkha/mt-musicldm
 ```
 
 To run the code in this repository, you will need python 3.9 
