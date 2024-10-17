@@ -1,0 +1,182 @@
+project_name: "multichannel_slakh"
+log_directory: "/home/karchkhadze/MusicLDM-Ext/lightning_logs"
+mode: test #validate_and_train
+dev: False
+
+id:
+  version: "guitar_music"
+  name: "3_D_4_stems_slakh_with_CLAP_ch=192_eval_TEXT"
+
+trainer:
+  validation_every_n_steps: 25000 #0[00
+  save_checkpoint_every_n_steps: 25000 #25000
+  save_top_k: 3
+  max_epochs: 1200
+  limit_train_batches:
+  limit_val_batches: 75
+  resume:
+  resume_from_checkpoint: /home/karchkhadze/MusicLDM-Ext/lightning_logs/multichannel_slakh/2024-03-25T00-55-31_3_D_4_stems_slakh_with_CALP_ch=192_3e-05_/checkpoints/last.ckpt # /home/karchkhadze/MusicLDM-Ext/lightning_logs/multichannel_slakh/2024-03-24T19-51-37_3_D_4_stems_slakh_uncond_ch=192_3e-05_/checkpoints/checkpoint-fad-0.00-global_step=199999.ckpt
+  accelerator: gpu
+  devices: 
+    - 0
+    # - 1
+    # - 2
+
+
+data:
+  target: src.utilities.data.datamodule.DataModuleFromConfig
+  params:
+    batch_size: 2 #16
+    num_workers: 2 #8
+
+    augmentation:
+      mixup: 0.0
+      return_all_wav: False
+      balanced_sampling: False
+
+    path:
+      dataset_type: "MultiSource_Slakh"
+      train_data:
+        - /home/karchkhadze/MusicLDM-Ext/data/slakh2100/train
+        - /home/karchkhadze/MusicLDM-Ext/data/slakh2100/validation
+      valid_data: /home/karchkhadze/MusicLDM-Ext/data/slakh2100/test
+      test_data: #"data/Audiostock-10k-16khz/test_split_audio_content_analysis.json"
+      label_data: #"data/Audiostock-10k-16khz/label"
+      tempo_data: ""
+      tempo_map: ""
+      stems: 
+        - 'bass'
+        - 'drums'
+        - 'guitar'
+        - 'piano'
+      shuffle_val_test: True
+      # stems_to_inpaint: 
+      #   - "piano"
+      text_prompt: "guitar music"
+      
+
+
+    preprocessing:
+      label:
+        norm: True
+        top_k: 527
+        quantization: False
+        threshold: 0.01
+        label_use_original_ground_truth: False
+      audio:
+        sampling_rate: 16000
+        max_wav_value: 32768.0
+      stft:
+        filter_length: 1024
+        hop_length: 160
+        win_length: 1024
+      mel:
+        n_mel_channels: 64 # TODO might need to change # 64 or 128
+        mel_fmin: 0
+        mel_fmax: 8000 # please set to 8000 for HiFi-GAN vocoder, set to null for MelGAN vocoder
+        freqm: 0
+        timem: 0
+        blur: False
+        # mean: -4.63
+        # std: 2.74
+        target_length: 1024
+
+model:
+  target: latent_diffusion.models.musicldm.MusicLDM
+  # num_workers: 16
+  params:
+    num_stems: 4
+    base_learning_rate: 3.0e-05
+    batchsize: 45
+    linear_start: 0.0015
+    linear_end: 0.0195
+    num_timesteps_cond: 1
+    log_every_t: 200
+    timesteps: 1000
+    first_stage_key: fbank_stems
+    cond_stage_key: text # waveform | text
+    latent_t_size: 256 # TODO might need to change # (256, 16) or (128,16)
+    latent_f_size: 16 
+    channels: 4 # TODO might need to change # 8 or 16
+    cond_stage_trainable: False
+    latent_mixup: 0.0
+    conditioning_key: film
+    monitor: val/loss_simple_ema
+    scale_by_std: true
+    ckpt_path:
+    # ignore_keys:
+      # - first_stage_model
+      # - cond_stage_model#
+    unet_config:
+      target: latent_diffusion.modules.diffusionmodules.openaimodel.UNetModel
+      params:
+        image_size: 64 # Ignore this parameter
+        extra_film_condition_dim: 512
+        extra_film_use_concat: true
+        in_channels: 4 # TODO might need to change # 8 or 16
+        out_channels: 4 # TODO might need to change # 8 or 16
+        model_channels: 192 # TODO might need to change
+        no_condition: false
+        dims: 3
+        attention_resolutions:
+        - 8
+        - 4
+        - 2
+        num_res_blocks: 2
+        channel_mult:
+        - 1
+        - 2
+        - 3
+        - 5
+        num_head_channels: 32
+        use_spatial_transformer: False # Not adapted for 3 D :((
+        # no_condition: True
+    first_stage_config:
+      base_learning_rate: 4.5e-05
+      target: latent_encoder.autoencoder.AutoencoderKL
+      params: 
+        reload_from_ckpt: lightning_logs/musicldm_checkpoints/vae-ckpt.ckpt
+        batchsize: 4
+        monitor: val/rec_loss
+        image_key: fbank
+        subband: 1
+        embed_dim: 8 # TODO might need to change # 8 or 16
+        time_shuffle: 1
+        mel_num: 64 # TODO might need to change 64 or 128
+        lossconfig:
+          target: latent_diffusion.modules.losses.LPIPSWithDiscriminator
+          params:
+            disc_start: 50001
+            kl_weight: 1.0
+            disc_weight: 0.5
+            disc_in_channels: 1
+        ddconfig:
+          double_z: true
+          hifigan_ckpt: lightning_logs/musicldm_checkpoints/hifigan-ckpt.ckpt
+          z_channels: 8 # TODO might need to change # 8 or 16
+          resolution: 256
+          downsample_time: false
+          in_channels: 1
+          out_ch: 1
+          ch: 128
+          ch_mult:
+          - 1
+          - 2
+          - 4
+          # - 8 # TODO might need to change
+          num_res_blocks: 2
+          attn_resolutions: []
+          dropout: 0.0
+
+    cond_stage_config:
+      target: latent_diffusion.modules.encoders.modules.CLAPAudioEmbeddingClassifierFreev2
+      params:
+        pretrained_path: lightning_logs/musicldm_checkpoints/clap-ckpt.pt
+        sampling_rate: 16000
+        embed_mode: text # text | audio
+        unconditional_prob: 0.0
+
+    evaluation_params:
+      unconditional_guidance_scale: 2.0
+      ddim_sampling_steps: 200
+      n_candidates_per_samples: 1
